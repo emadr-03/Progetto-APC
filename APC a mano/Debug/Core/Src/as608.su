@@ -1,0 +1,15 @@
+../Core/Src/as608.c:26:13:AS608_SendPacket	64	static
+../Core/Src/as608.c:73:16:AS608_RecvAck	16	static
+../Core/Src/as608.c:83:6:AS608_Init	16	static
+../Core/Src/as608.c:93:9:AS608_IsFingerPresent	24	static
+../Core/Src/as608.c:106:14:AS608_VerifyPassword	32	static
+../Core/Src/as608.c:121:14:AS608_EmptyDB	24	static
+../Core/Src/as608.c:133:14:AS608_DeleteChar	40	static
+../Core/Src/as608.c:154:14:AS608_IdentifyFinger	56	static
+../Core/Src/as608.c:199:14:AS608_GetImage	24	static
+../Core/Src/as608.c:209:14:AS608_GenChar	32	static
+../Core/Src/as608.c:220:14:AS608_RegModel	24	static
+../Core/Src/as608.c:230:14:AS608_StoreChar	32	static
+../Core/Src/as608.c:246:14:AS608_LoadChar	32	static
+../Core/Src/as608.c:265:8:AS608_FindFreeSlot	16	static
+../Core/Src/as608.c:281:14:AS608_EnrollFinger	56	static

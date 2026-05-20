@@ -1,0 +1,12 @@
+../Core/Src/lcd.c:29:20:pinHi	1
+../Core/Src/lcd.c:32:20:pinLo	1
+../Core/Src/lcd.c:37:13:pulseEN	1
+../Core/Src/lcd.c:45:13:write4	5
+../Core/Src/lcd.c:59:13:send	2
+../Core/Src/lcd.c:65:13:cmd	1
+../Core/Src/lcd.c:66:13:dat	1
+../Core/Src/lcd.c:76:6:LCD_Init	1
+../Core/Src/lcd.c:99:6:LCD_Clear	1
+../Core/Src/lcd.c:104:6:LCD_SetCursor	1
+../Core/Src/lcd.c:108:6:LCD_PrintChar	1
+../Core/Src/lcd.c:110:6:LCD_Print	2

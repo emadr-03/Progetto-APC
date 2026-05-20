@@ -84,10 +84,10 @@ void initDB() {
     /* Seed iniziale — inserisce solo se la tabella è vuota */
     const char* seedSQL =
         "INSERT OR IGNORE INTO users (id, name, role, has_access) VALUES"
-        "  (1, 'Mario Rossi',  'Proprietario', 1),"
-        "  (2, 'Anna Bianchi', 'Familiare',    1),"
-        "  (3, 'Luigi Verdi',  'Ospite',       1),"
-        "  (4, 'Revocato',     'Ex-ospite',    0);";
+        "  (1, 'Domenico',  'Proprietario', 1),"
+        "  (2, 'Giovanni', 'Familiare',    1),"
+        "  (3, 'Antonio',  'Ospite',       1),"
+        "  (4, 'Emanuele',     'Ex-ospite',    1);";
 
     if (sqlite3_exec(db, seedSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         Serial.printf("[DB] Seed error: %s\n", errMsg);

@@ -357,7 +357,6 @@ int main(void)
           /* Verifica finale dopo cancellazione manuale */
           if (AS608_LoadChar(AS608_CHARBUF_2, 1) != AS608_OK) {
               ShowLCD("Database       ", "Azzerato!      ");
-              SendESP("DB_RESET");
               Buzz(500);
           } else {
               ShowLCD("Errore Reset   ", "Riprovare      ");
@@ -366,7 +365,6 @@ int main(void)
       } else {
           /* EmptyDB ha funzionato */
           ShowLCD("Database       ", "Azzerato!      ");
-          SendESP("DB_RESET");
           Buzz(500);
       }
 

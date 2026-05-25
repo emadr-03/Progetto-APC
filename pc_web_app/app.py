@@ -15,20 +15,13 @@ ESP32_API_KEY = os.getenv("ESP32_API_KEY")
 
 
 def config_errors():
-    missing = []
-    if not ADMIN_USER:
-        missing.append("APP_ADMIN_USER")
-    if not ADMIN_PASS:
-        missing.append("APP_ADMIN_PASS")
-    if not ESP32_BASE_URL:
-        missing.append("ESP32_BASE_URL")
-    if not ESP32_API_KEY:
-        missing.append("ESP32_API_KEY")
-    return missing
-
-
-def is_config_ok():
-    return len(config_errors()) == 0
+    cfg = {
+        "APP_ADMIN_USER": ADMIN_USER,
+        "APP_ADMIN_PASS": ADMIN_PASS,
+        "ESP32_BASE_URL": ESP32_BASE_URL,
+        "ESP32_API_KEY": ESP32_API_KEY,
+    }
+    return [key for key, value in cfg.items() if not value]
 
 
 @app.before_request
@@ -41,8 +34,9 @@ def require_login():
 
 
 def esp32_request(method, path, json_payload=None, params=None, timeout=6):
-    if not is_config_ok():
-        return {"ok": False, "error": "config_missing", "missing": config_errors()}, 500
+    missing = config_errors()
+    if missing:
+        return {"ok": False, "error": "config_missing", "missing": missing}, 500
 
     url = ESP32_BASE_URL.rstrip("/") + path
     headers = {"X-API-KEY": ESP32_API_KEY}
@@ -62,15 +56,16 @@ def esp32_request(method, path, json_payload=None, params=None, timeout=6):
 
 @app.route("/login", methods=["GET", "POST"])
 def login():
+    error = None
     if request.method == "POST":
         username = request.form.get("username", "").strip()
         password = request.form.get("password", "")
         if username == ADMIN_USER and password == ADMIN_PASS:
             session["authed"] = True
             return redirect(url_for("index"))
-        return render_template("login.html", error="Invalid credentials")
+        error = "Invalid credentials"
 
-    return render_template("login.html", error=None)
+    return render_template("login.html", error=error)
 
 
 @app.route("/logout", methods=["POST"])
@@ -81,10 +76,11 @@ def logout():
 
 @app.route("/")
 def index():
+    errors = config_errors()
     return render_template(
         "index.html",
-        config_ok=is_config_ok(),
-        config_errors=config_errors(),
+        config_ok=not errors,
+        config_errors=errors,
     )
 
 

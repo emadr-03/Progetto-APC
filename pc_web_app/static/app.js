@@ -1,133 +1,127 @@
-const form = document.getElementById("enroll-form");
-const firstNameInput = document.getElementById("first-name");
-const lastNameInput = document.getElementById("last-name");
-const statusBadge = document.getElementById("status-badge");
-const statusDetails = document.getElementById("status-details");
-const statusId = document.getElementById("status-id");
-const logEl = document.getElementById("activity-log");
+const $ = (id) => document.getElementById(id);
+const ui = {
+  form: $("enroll-form"),
+  first: $("first-name"),
+  last: $("last-name"),
+  badge: $("status-badge"),
+  details: $("status-details"),
+  id: $("status-id"),
+  log: $("activity-log")
+};
+
 const MAX_LOG_LINES = 120;
-const logLines = [];
+const STATUS_POLL_MS = 1500;
+const EVENTS_POLL_MS = 2000;
+const state = { lines: [], poll: null, events: null, lastEventId: 0 };
 
-let pollTimer = null;
-let eventTimer = null;
-let lastEventId = 0;
-
-function addLog(line, ts) {
+const addLog = (line, ts) => {
   const time = ts || new Date().toLocaleTimeString();
-  logLines.unshift(`[${time}] ${line}`);
-  if (logLines.length > MAX_LOG_LINES) {
-    logLines.length = MAX_LOG_LINES;
-  }
-  logEl.textContent = logLines.join("\n");
-}
+  state.lines.unshift(`[${time}] ${line}`);
+  if (state.lines.length > MAX_LOG_LINES) state.lines.length = MAX_LOG_LINES;
+  ui.log.textContent = state.lines.join("\n");
+};
 
-function setStatus(state, message, id) {
-  statusBadge.textContent = state.replace("_", " ");
-  statusDetails.textContent = message || "";
-  statusId.textContent = id ? `ID: ${id}` : "";
-}
+const setStatus = (status, message, id) => {
+  ui.badge.textContent = status.replace(/_/g, " ");
+  ui.details.textContent = message || "";
+  ui.id.textContent = id ? `ID: ${id}` : "";
+};
 
-async function fetchStatus() {
+const jsonFetch = async (url, options) => {
   try {
-    const res = await fetch("/api/status");
-    const data = await res.json();
-    if (!data.ok) {
-      setStatus("error", data.error || "unknown error", "");
-      addLog(`Status error: ${data.error || "unknown"}`);
-      stopPolling();
-      return;
-    }
-
-    const state = data.status || "idle";
-    setStatus(state, data.message || "", data.id || "");
-
-    if (state === "done") {
-      addLog(`Enrollment complete for ${data.first_name} ${data.last_name} (ID ${data.id})`);
-      stopPolling();
-    } else if (state === "error") {
-      addLog(`Enrollment failed: ${data.message || "unknown"}`);
-      stopPolling();
-    }
+    const res = await fetch(url, options);
+    return { ok: res.ok, data: await res.json() };
   } catch (err) {
+    return { error: true };
+  }
+};
+
+const fetchStatus = async () => {
+  const result = await jsonFetch("/api/status");
+  if (result.error) {
     setStatus("error", "Failed to reach server", "");
     addLog("Network error while reading status");
     stopPolling();
+    return;
   }
-}
 
-async function fetchEvents() {
-  try {
-    const res = await fetch(`/api/events?since=${lastEventId}`);
-    const data = await res.json();
-    if (!data.ok) {
-      addLog(`Events error: ${data.error || "unknown"}`);
-      return;
-    }
-
-    const events = data.events || [];
-    for (const event of events) {
-      const label = `${event.type}: ${event.message}`;
-      addLog(label, event.ts);
-      if (event.id > lastEventId) lastEventId = event.id;
-    }
-  } catch (err) {
-    addLog("Network error while reading events");
+  const data = result.data || {};
+  if (!data.ok) {
+    setStatus("error", data.error || "unknown error", "");
+    addLog(`Status error: ${data.error || "unknown"}`);
+    stopPolling();
+    return;
   }
-}
 
-function startPolling() {
-  if (pollTimer) return;
-  pollTimer = setInterval(fetchStatus, 1500);
-}
+  const current = data.status || "idle";
+  setStatus(current, data.message || "", data.id || "");
 
-function stopPolling() {
-  if (!pollTimer) return;
-  clearInterval(pollTimer);
-  pollTimer = null;
-}
+  if (current === "done") {
+    addLog(`Enrollment complete for ${data.first_name} ${data.last_name} (ID ${data.id})`);
+    stopPolling();
+  } else if (current === "error") {
+    addLog(`Enrollment failed: ${data.message || "unknown"}`);
+    stopPolling();
+  }
+};
 
-function startEventPolling() {
-  if (eventTimer) return;
-  eventTimer = setInterval(fetchEvents, 2000);
-}
+const fetchEvents = async () => {
+  const result = await jsonFetch(`/api/events?since=${state.lastEventId}`);
+  if (result.error) return addLog("Network error while reading events");
 
-if (form) {
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
+  const data = result.data || {};
+  if (!data.ok) return addLog(`Events error: ${data.error || "unknown"}`);
 
-    const firstName = firstNameInput.value.trim();
-    const lastName = lastNameInput.value.trim();
+  for (const event of data.events || []) {
+    addLog(`${event.type}: ${event.message}`, event.ts);
+    if (event.id > state.lastEventId) state.lastEventId = event.id;
+  }
+};
 
-    if (!firstName || !lastName) {
-      addLog("Insert both first and last name");
-      return;
-    }
+const startPolling = () => {
+  if (!state.poll) state.poll = setInterval(fetchStatus, STATUS_POLL_MS);
+};
 
-    setStatus("in_progress", "Starting enrollment", "");
-    addLog(`Starting enrollment for ${firstName} ${lastName}`);
+const stopPolling = () => {
+  if (!state.poll) return;
+  clearInterval(state.poll);
+  state.poll = null;
+};
 
-    try {
-      const res = await fetch("/api/enroll", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ first_name: firstName, last_name: lastName })
-      });
+const startEventPolling = () => {
+  if (!state.events) state.events = setInterval(fetchEvents, EVENTS_POLL_MS);
+};
 
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
-        setStatus("error", data.error || "request failed", "");
-        addLog(`Enroll request failed: ${data.error || "request failed"}`);
-        return;
-      }
+ui.form?.addEventListener("submit", async (event) => {
+  event.preventDefault();
 
-      setStatus("in_progress", "Waiting for fingerprint sensor", "");
-      startPolling();
-    } catch (err) {
-      setStatus("error", "Failed to reach server", "");
-      addLog("Network error while starting enrollment");
-    }
+  const first = ui.first.value.trim();
+  const last = ui.last.value.trim();
+  if (!first || !last) return addLog("Insert both first and last name");
+
+  setStatus("in_progress", "Starting enrollment", "");
+  addLog(`Starting enrollment for ${first} ${last}`);
+
+  const result = await jsonFetch("/api/enroll", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ first_name: first, last_name: last })
   });
-}
+
+  if (result.error) {
+    setStatus("error", "Failed to reach server", "");
+    return addLog("Network error while starting enrollment");
+  }
+
+  const data = result.data || {};
+  if (!result.ok || !data.ok) {
+    setStatus("error", data.error || "request failed", "");
+    return addLog(`Enroll request failed: ${data.error || "request failed"}`);
+  }
+
+  setStatus("in_progress", "Waiting for fingerprint sensor", "");
+  startPolling();
+});
 
 fetchStatus();
 fetchEvents();

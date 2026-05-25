@@ -15,7 +15,7 @@
     <header class="topbar">
       <div>
         <div class="eyebrow">Smart Lock</div>
-        <h1>Enrollment Console</h1>
+        <h1>Pannello di controllo</h1>
       </div>
       <form method="post" action="{{ url_for('logout') }}">
         <button class="btn ghost" type="submit">Logout</button>
@@ -30,30 +30,29 @@
 
     <main class="grid">
       <section class="card">
-        <h2>Register new fingerprint</h2>
-        <p class="muted">Insert first and last name, then follow the sensor prompts.</p>
+        <h2>Registra nuova impronta</h2>
         <form id="enroll-form" class="stack">
           <label class="field">
-            <span>First name</span>
+            <span>Nome</span>
             <input id="first-name" type="text" required />
           </label>
           <label class="field">
-            <span>Last name</span>
+            <span>Cognome</span>
             <input id="last-name" type="text" required />
           </label>
-          <button class="btn primary" type="submit">Start enrollment</button>
+          <button class="btn primary" type="submit">Inserisci</button>
         </form>
       </section>
 
       <section class="card">
-        <h2>Status</h2>
+        <h2>Stato</h2>
         <div class="status" id="status-badge">Idle</div>
         <div class="status-details" id="status-details">Waiting for a new enrollment.</div>
         <div class="status-id" id="status-id"></div>
       </section>
 
       <section class="card wide">
-        <h2>Activity</h2>
+        <h2>Attività</h2>
         <div class="log" id="activity-log"></div>
       </section>
     </main>

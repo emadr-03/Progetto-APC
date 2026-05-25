@@ -52,7 +52,7 @@ struct EnrollContext {
     uint32_t completedMs;
 };
 
-#define ENROLL_RESET_MS 5000
+#define ENROLL_RESET_MS 10000
 
 EnrollContext enroll = { ENROLL_IDLE, "", "", 0, "idle", 0, 0 };
 

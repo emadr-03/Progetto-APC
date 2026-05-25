@@ -5,6 +5,8 @@ const statusBadge = document.getElementById("status-badge");
 const statusDetails = document.getElementById("status-details");
 const statusId = document.getElementById("status-id");
 const logEl = document.getElementById("activity-log");
+const MAX_LOG_LINES = 120;
+const logLines = [];
 
 let pollTimer = null;
 let eventTimer = null;
@@ -12,7 +14,11 @@ let lastEventId = 0;
 
 function addLog(line, ts) {
   const time = ts || new Date().toLocaleTimeString();
-  logEl.textContent = `[${time}] ${line}\n` + logEl.textContent;
+  logLines.unshift(`[${time}] ${line}`);
+  if (logLines.length > MAX_LOG_LINES) {
+    logLines.length = MAX_LOG_LINES;
+  }
+  logEl.textContent = logLines.join("\n");
 }
 
 function setStatus(state, message, id) {

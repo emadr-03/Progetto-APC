@@ -11,7 +11,7 @@
 #include "esp_system.h"
 
 /* ── DEBUG ───────────────────────────────────────── */
-#define DEBUG 1
+#define DEBUG 0
 
 #if DEBUG
   #define DBG(x)       Serial.print(x)
@@ -214,27 +214,58 @@ bool update_or_insertUser(uint8_t id, const char* name, const char* role, bool a
 
     DBGF("[DB] update_or_insertUser(%u)\n", id);
 
-    const char* sql =
-        "INSERT INTO users (id, name, role, has_access) VALUES (?,?,?,?)"
-        " ON CONFLICT(id) DO UPDATE SET name=excluded.name,"
-        "   role=excluded.role, has_access=excluded.has_access;";
+    if (!db) {
+        DBGLN("[DB] DB POINTER NULL");
+        return false;
+    }
 
-    sqlite3_stmt* stmt;
+    const char* updateSql =
+        "UPDATE users SET name = ?, role = ?, has_access = ? WHERE id = ?;";
+    sqlite3_stmt* stmt = nullptr;
 
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        DBGF("[DB] Prepare FAIL: %s\n", sqlite3_errmsg(db));
+    if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        DBGF("[DB] UPDATE Prepare FAIL: %s\n", sqlite3_errmsg(db));
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, role, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int (stmt, 3, access ? 1 : 0);
+    sqlite3_bind_int (stmt, 4, id);
+
+    DBGLN("[DB] Executing UPDATE");
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        DBGF("[DB] UPDATE FAIL: %s\n", sqlite3_errmsg(db));
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    int changes = sqlite3_changes(db);
+    sqlite3_finalize(stmt);
+
+    if (changes > 0) {
+        DBGLN("[DB] UPDATE OK");
+        return true;
+    }
+
+    const char* insertSql =
+        "INSERT INTO users (id, name, role, has_access) VALUES (?,?,?,?);";
+
+    if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) != SQLITE_OK) {
+        DBGF("[DB] INSERT Prepare FAIL: %s\n", sqlite3_errmsg(db));
         return false;
     }
 
     sqlite3_bind_int (stmt, 1, id);
-    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, role, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, role, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int (stmt, 4, access ? 1 : 0);
 
-    DBGLN("[DB] Executing UPSERT");
+    DBGLN("[DB] Executing INSERT");
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-    DBGF("[DB] UPSERT result=%d\n", ok);
-
+    if (!ok) {
+        DBGF("[DB] INSERT FAIL: %s\n", sqlite3_errmsg(db));
+    }
     sqlite3_finalize(stmt);
     return ok;
 }
@@ -538,9 +569,12 @@ void onEnrollResult(const char* payload) {
     if (!update_or_insertUser(id, fullName, "User", true)) {
         DBGLN("[ENROLL] DB WRITE FAILED");
         enroll.state = ENROLL_ERROR;
-        snprintf(enroll.message, sizeof(enroll.message), "db_write_failed");
+        const char* err = db ? sqlite3_errmsg(db) : "db_null";
+        snprintf(enroll.message, sizeof(enroll.message), "db_write_failed:%s", err);
         enroll.completedMs = millis();
-        addEvent("enroll_error", "Enrollment failed: db_write_failed");
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Enrollment failed: db_write_failed (%s)", err);
+        addEvent("enroll_error", msg);
         return;
     }
 

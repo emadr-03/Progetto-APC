@@ -165,16 +165,32 @@ User findUser(uint8_t targetId) {
 
 /* Aggiunge o aggiorna un utente */
 bool update_or_insertUser(uint8_t id, const char* name, const char* role, bool access) {
-    const char* sql =
-        "INSERT INTO users (id, name, role, has_access) VALUES (?,?,?,?)"
-        " ON CONFLICT(id) DO UPDATE SET name=excluded.name,"
-        "   role=excluded.role, has_access=excluded.has_access;";
-    sqlite3_stmt* stmt;
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    if (!db) return false;
+
+    const char* updateSql = "UPDATE users SET name = ?, role = ?, has_access = ? WHERE id = ?;";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db, updateSql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, role, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int (stmt, 3, access ? 1 : 0);
+    sqlite3_bind_int (stmt, 4, id);
+
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        sqlite3_finalize(stmt);
+        return false;
+    }
+
+    int changes = sqlite3_changes(db);
+    sqlite3_finalize(stmt);
+    if (changes > 0) return true;
+
+    const char* insertSql = "INSERT INTO users (id, name, role, has_access) VALUES (?,?,?,?);";
+    if (sqlite3_prepare_v2(db, insertSql, -1, &stmt, nullptr) != SQLITE_OK) return false;
 
     sqlite3_bind_int (stmt, 1, id);
-    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, role, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, role, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int (stmt, 4, access ? 1 : 0);
 
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
@@ -405,9 +421,12 @@ void onEnrollResult(const char* payload) {
 
     if (!update_or_insertUser(id, fullName, "User", true)) {
         enroll.state = ENROLL_ERROR;
-        snprintf(enroll.message, sizeof(enroll.message), "db_write_failed");
+        const char* err = db ? sqlite3_errmsg(db) : "db_null";
+        snprintf(enroll.message, sizeof(enroll.message), "db_write_failed:%s", err);
         enroll.completedMs = millis();
-        addEvent("enroll_error", "Enrollment failed: db_write_failed");
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Enrollment failed: db_write_failed (%s)", err);
+        addEvent("enroll_error", msg);
         return;
     }
 

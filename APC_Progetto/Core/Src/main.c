@@ -53,7 +53,6 @@ static AppState appState = S_STANDBY;
  * Scritti nelle ISR (HAL_GPIO_EXTI_Callback), letti nel loop principale.
  * Dichiarati volatile per impedire ottimizzazioni del compilatore.         */
 static volatile uint8_t flagFinger = 0;   /* PC5 TCH — dito rilevato       */
-static volatile uint8_t flagButton = 0;   /* PA0     — pulsante blu premuto */
 
 /* ── UART3 ricezione asincrona (ESP32 → STM32) ─────────────────────────── */
 #define RX3_LEN   64
@@ -106,7 +105,6 @@ static void RunEnroll(void);
  * Setta solo il flag — nessuna logica applicativa nell'ISR.                */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (GPIO_Pin == GPIO_PIN_5) flagFinger = 1;   /* TCH AS608     */
-    if (GPIO_Pin == GPIO_PIN_0) flagButton = 1;   /* pulsante PA0  */
 }
 
 /* ── Callback UART3 (ESP32 → STM32) ────────────────────────────────────────
@@ -189,6 +187,7 @@ static void RunEnroll(void) {
 
     if (freeSlot < 0) {
         ShowLCD("DB Pieno!      ", "Max 127 impr.  ");
+        SendESP("ENROLL_RESULT:ERR:DB_FULL");
         BuzzFail();
         HAL_Delay(2000);
         return;
@@ -234,18 +233,25 @@ static void RunEnroll(void) {
     /* ── Successo ─────────────────────────────────────────── */
     snprintf(line, sizeof(line), "Salvata ID: %u", (unsigned)slot);
     ShowLCD("Impronta OK!   ", line);
+    {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "ENROLL_RESULT:%u:OK", (unsigned)slot);
+        SendESP(msg);
+    }
     BuzzOK();
     HAL_Delay(2000);
     return;
 
 enroll_error:
     ShowLCD("Errore Registr.", "               ");
+    SendESP("ENROLL_RESULT:ERR:FAIL");
     BuzzFail();
     HAL_Delay(2000);
     return;
 
 enroll_timeout:
     ShowLCD("Timeout        ", "Operaz. annull.");
+    SendESP("ENROLL_RESULT:ERR:TIMEOUT");
     BuzzFail();
     HAL_Delay(2000);
 }
@@ -383,20 +389,21 @@ boot_continue:
 
     /* ── S_STANDBY ─────────────────────────────────────────
      * Stato di riposo. Mostra la schermata principale e rimane
-     * in spin-wait finché uno dei due interrupt non arriva.
-     * flagButton ha priorità: se entrambi scattano insieme
-     * si avvia l'enrollment, non l'identificazione.          */
+     * in spin-wait finché arriva un dito (PC5) o un comando
+     * remoto "ENROLL_START" dall'ESP32.                      */
     case S_STANDBY:
         ShowLCD("   Magic Box   ", "Attesa impronta");
         LED_OffAll();
         flagFinger = 0;
-        flagButton = 0;
+        while (!flagFinger && !rx3Ready) HAL_Delay(50);
 
-        while (!flagFinger && !flagButton) HAL_Delay(50);
-
-        if (flagButton) {
-            flagButton = 0;
-            appState   = S_ENROLL;
+        if (rx3Ready) {
+            rx3Ready = 0;
+            if (strcmp(rx3Buf, "ENROLL_START") == 0) {
+                appState = S_ENROLL;
+            } else {
+                appState = S_STANDBY;
+            }
         } else {
             flagFinger = 0;
             appState   = S_IDENTIFY;
@@ -456,8 +463,10 @@ boot_continue:
     case S_WAIT_ESP:
         if (rx3Ready) {
             rx3Ready = 0;
-            appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK
-                                                  : S_RESULT_FAIL;
+            if (strncmp(rx3Buf, "AUTH_RESULT:", 12) == 0) {
+                appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK
+                                                      : S_RESULT_FAIL;
+            }
         } else if (HAL_GetTick() - espTimer > 10000) {
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;

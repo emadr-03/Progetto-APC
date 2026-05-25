@@ -3,18 +3,16 @@
    Database utenti in array statico (espandibile con NVS/SPIFFS).    */
 
 #include <WiFi.h>
-#include <WiFiClientSecure.h>
-#include <UniversalTelegramBot.h>
+#include <WebServer.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <LittleFS.h>
 #include <sqlite3.h>
 
 /* ── Credenziali ─────────────────────────────────── */
-const char* SSID      = "Giovanni";
-const char* WIFI_PASS = "PendragonGi";
-const char* BOT_TOKEN = "8549113935:AAGg_RhQcl0YDdibSQC4-ZkMCOxJlzwAgKc";     /* @BotFather */
-const char* CHAT_ID   = "218264258";    /* @userinfobot */
+const char* SSID      = "iPhone_MrDome";
+const char* WIFI_PASS = "nonlasos";
+const char* API_KEY   = "Pendragon";     /* X-API-KEY per le chiamate HTTP */
 
 /* ── UART verso STM32 ────────────────────────────── */
 #define STM_RX   16    /* <- PB10 (USART3_TX STM32) */
@@ -37,15 +35,53 @@ struct User {
 sqlite3* db =nullptr;
 const char* DB_PATH="/littlefs/smartlock.db";
 
+enum EnrollState {
+    ENROLL_IDLE = 0,
+    ENROLL_IN_PROGRESS,
+    ENROLL_DONE,
+    ENROLL_ERROR
+};
+
+struct EnrollContext {
+    EnrollState state;
+    char first[32];
+    char last[32];
+    uint8_t id;
+    char message[64];
+    uint32_t startedMs;
+};
+
+EnrollContext enroll = { ENROLL_IDLE, "", "", 0, "idle", 0 };
+
+struct EventLog {
+    uint32_t id;
+    char ts[20];
+    char type[20];
+    char message[120];
+};
+
+#define MAX_EVENTS 30
+EventLog events[MAX_EVENTS];
+uint8_t eventSize = 0;
+uint8_t eventHead = 0;
+uint32_t nextEventId = 1;
+
 /* ── Prototipi ───────────────────────────────────── */
 void handle(const char* cmd);
-void tg(String text);
 String timestamp();
+void setupServer();
+void handleApiEnroll();
+void handleApiEnrollStatus();
+void handleApiHealth();
+void handleApiEvents();
+bool apiAuthorized();
+void startEnrollment(const char* first, const char* last);
+void onEnrollResult(const char* payload);
+void addEvent(const char* type, const char* message);
 
 /* ── Oggetti ─────────────────────────────────────── */
-WiFiClientSecure  client;
-UniversalTelegramBot bot(BOT_TOKEN, client);
 HardwareSerial    stm(2);   /* UART2 ESP32 */
+WebServer         server(80);
 
 /* ── Buffer UART ─────────────────────────────────── */
 char    rxBuf[128];
@@ -169,6 +205,202 @@ bool deleteUser(uint8_t id) {
     return ok;
 }
 
+void addEvent(const char* type, const char* message) {
+    EventLog* e = &events[eventHead];
+    e->id = nextEventId++;
+
+    String ts = timestamp();
+    strncpy(e->ts, ts.c_str(), sizeof(e->ts) - 1);
+    e->ts[sizeof(e->ts) - 1] = '\0';
+
+    strncpy(e->type, type, sizeof(e->type) - 1);
+    e->type[sizeof(e->type) - 1] = '\0';
+
+    strncpy(e->message, message, sizeof(e->message) - 1);
+    e->message[sizeof(e->message) - 1] = '\0';
+
+    eventHead = (eventHead + 1) % MAX_EVENTS;
+    if (eventSize < MAX_EVENTS) eventSize++;
+}
+
+bool apiAuthorized() {
+    if (!server.hasHeader("X-API-KEY")) return false;
+    return server.header("X-API-KEY") == API_KEY;
+}
+
+void handleApiHealth() {
+    if (!apiAuthorized()) {
+        server.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+        return;
+    }
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void handleApiEvents() {
+    if (!apiAuthorized()) {
+        server.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+        return;
+    }
+
+    uint32_t since = 0;
+    if (server.hasArg("since")) {
+        since = (uint32_t)atoi(server.arg("since").c_str());
+    }
+
+    DynamicJsonDocument doc(4096);
+    doc["ok"] = true;
+    JsonArray arr = doc.createNestedArray("events");
+
+    uint8_t start = (eventHead + MAX_EVENTS - eventSize) % MAX_EVENTS;
+    for (uint8_t i = 0; i < eventSize; i++) {
+        uint8_t idx = (start + i) % MAX_EVENTS;
+        EventLog* e = &events[idx];
+        if (e->id <= since) continue;
+
+        JsonObject item = arr.createNestedObject();
+        item["id"] = e->id;
+        item["ts"] = e->ts;
+        item["type"] = e->type;
+        item["message"] = e->message;
+    }
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+void startEnrollment(const char* first, const char* last) {
+    strncpy(enroll.first, first, sizeof(enroll.first) - 1);
+    strncpy(enroll.last, last, sizeof(enroll.last) - 1);
+    enroll.first[sizeof(enroll.first) - 1] = '\0';
+    enroll.last[sizeof(enroll.last) - 1] = '\0';
+    enroll.id = 0;
+    enroll.state = ENROLL_IN_PROGRESS;
+    snprintf(enroll.message, sizeof(enroll.message), "waiting_for_sensor");
+    enroll.startedMs = millis();
+    stm.println("ENROLL_START");
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Enrollment started for %s %s", enroll.first, enroll.last);
+    addEvent("enroll_start", msg);
+}
+
+void handleApiEnroll() {
+    if (!apiAuthorized()) {
+        server.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+        return;
+    }
+
+    if (enroll.state == ENROLL_IN_PROGRESS) {
+        server.send(409, "application/json", "{\"ok\":false,\"error\":\"enroll_in_progress\"}");
+        return;
+    }
+
+    String body = server.arg("plain");
+    StaticJsonDocument<256> doc;
+    DeserializationError err = deserializeJson(doc, body);
+    if (err) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"bad_json\"}");
+        return;
+    }
+
+    const char* first = doc["first_name"] | "";
+    const char* last  = doc["last_name"] | "";
+    if (strlen(first) == 0 || strlen(last) == 0) {
+        server.send(400, "application/json", "{\"ok\":false,\"error\":\"missing_name\"}");
+        return;
+    }
+
+    startEnrollment(first, last);
+    server.send(202, "application/json", "{\"ok\":true,\"status\":\"started\"}");
+}
+
+void handleApiEnrollStatus() {
+    if (!apiAuthorized()) {
+        server.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorized\"}");
+        return;
+    }
+
+    StaticJsonDocument<256> doc;
+    doc["ok"] = true;
+
+    switch (enroll.state) {
+        case ENROLL_IDLE:        doc["status"] = "idle"; break;
+        case ENROLL_IN_PROGRESS: doc["status"] = "in_progress"; break;
+        case ENROLL_DONE:        doc["status"] = "done"; break;
+        case ENROLL_ERROR:       doc["status"] = "error"; break;
+        default:                 doc["status"] = "unknown"; break;
+    }
+
+    doc["first_name"] = enroll.first;
+    doc["last_name"]  = enroll.last;
+    doc["id"]         = enroll.id;
+    doc["message"]    = enroll.message;
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
+}
+
+void setupServer() {
+    const char* headers[] = { "X-API-KEY" };
+    server.collectHeaders(headers, 1);
+
+    server.on("/api/health", HTTP_GET, handleApiHealth);
+    server.on("/api/enroll", HTTP_POST, handleApiEnroll);
+    server.on("/api/enroll/status", HTTP_GET, handleApiEnrollStatus);
+    server.on("/api/events", HTTP_GET, handleApiEvents);
+    server.begin();
+}
+
+void onEnrollResult(const char* payload) {
+    if (strncmp(payload, "ERR:", 4) == 0) {
+        enroll.state = ENROLL_ERROR;
+        snprintf(enroll.message, sizeof(enroll.message), "%s", payload + 4);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Enrollment failed: %s", enroll.message);
+        addEvent("enroll_error", msg);
+        return;
+    }
+
+    const char* colon = strchr(payload, ':');
+    if (!colon) {
+        enroll.state = ENROLL_ERROR;
+        snprintf(enroll.message, sizeof(enroll.message), "bad_result");
+        addEvent("enroll_error", "Enrollment failed: bad_result");
+        return;
+    }
+
+    uint8_t id = (uint8_t)atoi(payload);
+    const char* status = colon + 1;
+    if (strcmp(status, "OK") != 0) {
+        enroll.state = ENROLL_ERROR;
+        snprintf(enroll.message, sizeof(enroll.message), "status_%s", status);
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Enrollment failed: %s", enroll.message);
+        addEvent("enroll_error", msg);
+        return;
+    }
+
+    char fullName[64];
+    snprintf(fullName, sizeof(fullName), "%s %s", enroll.first, enroll.last);
+
+    if (!update_or_insertUser(id, fullName, "User", true)) {
+        enroll.state = ENROLL_ERROR;
+        snprintf(enroll.message, sizeof(enroll.message), "db_write_failed");
+        addEvent("enroll_error", "Enrollment failed: db_write_failed");
+        return;
+    }
+
+    enroll.id = id;
+    enroll.state = ENROLL_DONE;
+    snprintf(enroll.message, sizeof(enroll.message), "saved");
+
+    char msg[128];
+    snprintf(msg, sizeof(msg), "Enrollment ok: %s (ID %u)", fullName, (unsigned)id);
+    addEvent("enroll_ok", msg);
+}
+
 void setup() {
     Serial.begin(115200);
     stm.begin(STM_BAUD, SERIAL_8N1, STM_RX, STM_TX);
@@ -183,9 +415,10 @@ void setup() {
 
     /* NTP Italia - CEST (ora legale) UTC+2 */
     configTime(3600, 3600, "pool.ntp.org");
-    client.setInsecure();
 
     initDB();
+
+    setupServer();
 
     // Conta utenti dal DB
     int userCount = 0;
@@ -196,9 +429,12 @@ void setup() {
         sqlite3_finalize(stmt);
     }  
 
-    tg(String("\xF0\x9F\x9F\xA2") + " *Smart Lock Online*\n"
-       "IP: " + WiFi.localIP().toString() + "\n"
-       "Utenti in DB: " + String(userCount));
+    {
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Smart Lock Online - IP %s - Users %d",
+                 WiFi.localIP().toString().c_str(), userCount);
+        addEvent("system", msg);
+    }
 
 }
 
@@ -214,13 +450,24 @@ void loop() {
             rxBuf[rxIdx++] = c;
         }
     }
+    server.handleClient();
+    if (enroll.state == ENROLL_IN_PROGRESS && (millis() - enroll.startedMs > 120000)) {
+        enroll.state = ENROLL_ERROR;
+        snprintf(enroll.message, sizeof(enroll.message), "timeout");
+        addEvent("enroll_error", "Enrollment failed: timeout");
+    }
     delay(10);
 }
 
 /* ── Parser comandi ──────────────────────────────── */
 void handle(const char* cmd) {
     Serial.printf("[STM32->] %s\n", cmd);
-    String ts = timestamp();
+
+    /* ── ENROLL_RESULT:<id>:OK | ENROLL_RESULT:ERR:<reason> ── */
+    if (strncmp(cmd, "ENROLL_RESULT:", 14) == 0) {
+        onEnrollResult(cmd + 14);
+        return;
+    }
 
     /* ── AUTH_REQUEST:<id> ── */
 if (strncmp(cmd, "AUTH_REQUEST:", 13) == 0) {
@@ -230,52 +477,40 @@ if (strncmp(cmd, "AUTH_REQUEST:", 13) == 0) {
 
     if (u.found && u.hasAccess) {
         stm.println(resp + "GRANTED");
-        tg(String("\xE2\x9C\x85") + " *Accesso Autorizzato*\n"
-           "\xF0\x9F\x91\xA4 " + String(u.name) + "\n"
-           "\xF0\x9F\x94\x96 " + String(u.role) + "\n"
-           "\xF0\x9F\x95\x90 " + timestamp());
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Access granted: %s (ID %u)", u.name, (unsigned)reqId);
+        addEvent("access_granted", msg);
     }
     else if (u.found && !u.hasAccess) {
         stm.println(resp + "DENIED");
-        tg(String("\xE2\x9B\x94") + " *Accesso Revocato*\n"
-           "\xF0\x9F\x91\xA4 " + String(u.name) + " (ID " + String(reqId) + ")\n"
-           "\xF0\x9F\x95\x90 " + timestamp());
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Access denied: %s (ID %u)", u.name, (unsigned)reqId);
+        addEvent("access_denied", msg);
     }
     else {
         stm.println(resp + "DENIED");
-        tg(String("\xE2\x9A\xA0\xEF\xB8\x8F") + " *ID sconosciuto*\n"
-           "\xF0\x9F\x94\xA2 ID: " + String(reqId) + "\n"
-           "\xF0\x9F\x95\x90 " + timestamp());
+        char msg[128];
+        snprintf(msg, sizeof(msg), "Unknown ID: %u", (unsigned)reqId);
+        addEvent("access_unknown", msg);
     }
     return;
 }
 
     /* ── Impronta sconosciuta (AS608 no-match) ── */
     if (strcmp(cmd, "ALERT:UNKNOWN_FINGER") == 0) {
-        tg(String("\xF0\x9F\x9A\xA8") + " *Tentativo di Accesso Non Autorizzato*\n"
-           "\xE2\x9D\x8C Impronta non riconosciuta\n"
-           "\xF0\x9F\x94\x92 Accesso bloccato\n"
-           "\xF0\x9F\x95\x90 " + ts);
+        addEvent("finger_unknown", "Unrecognized fingerprint");
         return;
     }
 
     /* ── Errori generici ── */
     if (strncmp(cmd, "ERR:", 4) == 0) {
-        tg(String("\xF0\x9F\x94\xB4") + " *Errore sistema*\n" +
-           String(cmd + 4) + "\n"
-           "\xF0\x9F\x95\x90 " + ts);
+        addEvent("error", cmd + 4);
         return;
     }
     /* BOOT:SYSTEM_OK -- ignorato qui */
 }
 
 /* ── Helpers ─────────────────────────────────────── */
-void tg(String text) {
-    if (WiFi.status() != WL_CONNECTED) { WiFi.reconnect(); delay(3000); }
-    if (!bot.sendMessage(CHAT_ID, text, "Markdown"))
-        { delay(1000); bot.sendMessage(CHAT_ID, text, "Markdown"); }
-}
-
 String timestamp() {
     struct tm t;
     if (!getLocalTime(&t, 1000)) return "N/D";

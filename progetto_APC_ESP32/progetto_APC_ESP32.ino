@@ -49,9 +49,12 @@ struct EnrollContext {
     uint8_t id;
     char message[64];
     uint32_t startedMs;
+    uint32_t completedMs;
 };
 
-EnrollContext enroll = { ENROLL_IDLE, "", "", 0, "idle", 0 };
+#define ENROLL_RESET_MS 5000
+
+EnrollContext enroll = { ENROLL_IDLE, "", "", 0, "idle", 0, 0 };
 
 struct EventLog {
     uint32_t id;
@@ -78,6 +81,7 @@ bool apiAuthorized();
 void startEnrollment(const char* first, const char* last);
 void onEnrollResult(const char* payload);
 void addEvent(const char* type, const char* message);
+void resetEnrollment();
 
 /* ── Oggetti ─────────────────────────────────────── */
 HardwareSerial    stm(2);   /* UART2 ESP32 */
@@ -223,6 +227,16 @@ void addEvent(const char* type, const char* message) {
     if (eventSize < MAX_EVENTS) eventSize++;
 }
 
+void resetEnrollment() {
+    enroll.state = ENROLL_IDLE;
+    enroll.first[0] = '\0';
+    enroll.last[0] = '\0';
+    enroll.id = 0;
+    snprintf(enroll.message, sizeof(enroll.message), "idle");
+    enroll.startedMs = 0;
+    enroll.completedMs = 0;
+}
+
 bool apiAuthorized() {
     if (!server.hasHeader("X-API-KEY")) return false;
     return server.header("X-API-KEY") == API_KEY;
@@ -278,6 +292,7 @@ void startEnrollment(const char* first, const char* last) {
     enroll.state = ENROLL_IN_PROGRESS;
     snprintf(enroll.message, sizeof(enroll.message), "waiting_for_sensor");
     enroll.startedMs = millis();
+    enroll.completedMs = 0;
     stm.println("ENROLL_START");
 
     char msg[128];
@@ -357,6 +372,7 @@ void onEnrollResult(const char* payload) {
     if (strncmp(payload, "ERR:", 4) == 0) {
         enroll.state = ENROLL_ERROR;
         snprintf(enroll.message, sizeof(enroll.message), "%s", payload + 4);
+        enroll.completedMs = millis();
         char msg[128];
         snprintf(msg, sizeof(msg), "Enrollment failed: %s", enroll.message);
         addEvent("enroll_error", msg);
@@ -367,6 +383,7 @@ void onEnrollResult(const char* payload) {
     if (!colon) {
         enroll.state = ENROLL_ERROR;
         snprintf(enroll.message, sizeof(enroll.message), "bad_result");
+        enroll.completedMs = millis();
         addEvent("enroll_error", "Enrollment failed: bad_result");
         return;
     }
@@ -376,6 +393,7 @@ void onEnrollResult(const char* payload) {
     if (strcmp(status, "OK") != 0) {
         enroll.state = ENROLL_ERROR;
         snprintf(enroll.message, sizeof(enroll.message), "status_%s", status);
+        enroll.completedMs = millis();
         char msg[128];
         snprintf(msg, sizeof(msg), "Enrollment failed: %s", enroll.message);
         addEvent("enroll_error", msg);
@@ -388,6 +406,7 @@ void onEnrollResult(const char* payload) {
     if (!update_or_insertUser(id, fullName, "User", true)) {
         enroll.state = ENROLL_ERROR;
         snprintf(enroll.message, sizeof(enroll.message), "db_write_failed");
+        enroll.completedMs = millis();
         addEvent("enroll_error", "Enrollment failed: db_write_failed");
         return;
     }
@@ -395,6 +414,7 @@ void onEnrollResult(const char* payload) {
     enroll.id = id;
     enroll.state = ENROLL_DONE;
     snprintf(enroll.message, sizeof(enroll.message), "saved");
+    enroll.completedMs = millis();
 
     char msg[128];
     snprintf(msg, sizeof(msg), "Enrollment ok: %s (ID %u)", fullName, (unsigned)id);
@@ -458,7 +478,14 @@ void loop() {
     if (enroll.state == ENROLL_IN_PROGRESS && (millis() - enroll.startedMs > 120000)) {
         enroll.state = ENROLL_ERROR;
         snprintf(enroll.message, sizeof(enroll.message), "timeout");
+        enroll.completedMs = millis();
         addEvent("enroll_error", "Enrollment failed: timeout");
+    }
+    if ((enroll.state == ENROLL_ERROR || enroll.state == ENROLL_DONE) && enroll.completedMs > 0) {
+        if (millis() - enroll.completedMs > ENROLL_RESET_MS) {
+            resetEnrollment();
+            addEvent("enroll_reset", "Enrollment state reset");
+        }
     }
     delay(10);
 }

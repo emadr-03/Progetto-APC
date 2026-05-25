@@ -34,6 +34,7 @@ struct User {
 
 sqlite3* db = nullptr;
 const char* DB_PATH = "/littlefs/smartlock.db";
+#define SEED_DEFAULT_USERS 0
 
 enum EnrollState {
     ENROLL_IDLE = 0,
@@ -81,6 +82,7 @@ void    startEnrollment(const char* first, const char* last);
 void    onEnrollResult(const char* payload);
 void    addEvent(const char* type, const char* message);
 void    resetEnrollment();
+void    resetUserDatabase();
 void    setEnrollError(const char* reason);
 void    setEnrollDone(uint8_t id, const char* fullName);
 bool    checkApiKey();
@@ -121,6 +123,7 @@ void initDB() {
         return;
     }
 
+#if SEED_DEFAULT_USERS
     const char* seedSQL =
         "INSERT OR IGNORE INTO users (id, name, role, has_access) VALUES"
         "  (1, 'Domenico', 'Proprietario', 1),"
@@ -131,6 +134,7 @@ void initDB() {
     if (sqlite3_exec(db, seedSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
         sqlite3_free(errMsg);
     }
+#endif
 }
 
 User findUser(uint8_t targetId) {
@@ -269,6 +273,18 @@ void resetEnrollment() {
     snprintf(enroll.message, sizeof(enroll.message), "idle");
     enroll.startedMs   = 0;
     enroll.completedMs = 0;
+}
+
+void resetUserDatabase() {
+    if (db) {
+        sqlite3_close(db);
+        db = nullptr;
+    }
+
+    LittleFS.remove(DB_PATH);
+    initDB();
+    resetEnrollment();
+    addEvent("db_reset", "User database reset");
 }
 
 void sendJson(int code, const char* body) {
@@ -511,6 +527,11 @@ void handle(const char* cmd) {
     /* ── ENROLL_RESULT:<id>:OK | ENROLL_RESULT:ERR:<reason> ── */
     if (strncmp(cmd, "ENROLL_RESULT:", 14) == 0) {
         onEnrollResult(cmd + 14);
+        return;
+    }
+
+    if (strcmp(cmd, "DB_RESET") == 0) {
+        resetUserDatabase();
         return;
     }
 

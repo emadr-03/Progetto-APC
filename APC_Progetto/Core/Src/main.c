@@ -15,10 +15,10 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
+/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lcd.h"      /* driver LCD 4-bit parallelo GPIOD */
 #include "as608.h"    /* driver lettore impronta AS608    */
@@ -29,7 +29,7 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef enum {
-    S_STANDBY,      /* attesa eventi: TCH (PC5) o pulsante (PA0) */
+    S_STANDBY,      /* attesa eventi: TCH (PC5) */
     S_IDENTIFY,     /* scansione impronta con AS608               */
     S_WAIT_ESP,     /* attesa risposta AUTH_RESULT da ESP32       */
     S_RESULT_OK,    /* accesso concesso — LED verde + buzz lungo  */
@@ -38,11 +38,24 @@ typedef enum {
 } AppState;
 /* USER CODE END PTD */
 
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+
 SPI_HandleTypeDef hspi1;
+
 UART_HandleTypeDef huart2;
 UART_HandleTypeDef huart3;
+
 PCD_HandleTypeDef hpcd_USB_FS;
 
 /* USER CODE BEGIN PV */
@@ -84,7 +97,6 @@ static void MX_SPI1_Init(void);
 static void MX_USB_PCD_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_USART3_UART_Init(void);
-
 /* USER CODE BEGIN PFP */
 static void LED_Set(uint16_t pin, uint8_t on);
 static void LED_OffAll(void);
@@ -98,6 +110,7 @@ static void SendESP(const char* msg);
 static void RunEnroll(void);
 /* USER CODE END PFP */
 
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
 /* ── Callback EXTI ─────────────────────────────────────────────────────────
@@ -258,32 +271,37 @@ enroll_timeout:
 
 /* USER CODE END 0 */
 
-/* ============================================================================
- * main() — entry point
- * ========================================================================== */
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
   /* USER CODE END 1 */
 
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
   /* USER CODE END Init */
 
+  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
   /* USER CODE END SysInit */
 
-  /* Inizializzazione periferiche generate da CubeMX */
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_USB_PCD_Init();
   MX_USART2_UART_Init();
   MX_USART3_UART_Init();
-
   /* USER CODE BEGIN 2 */
 
   LCD_Init();
@@ -379,9 +397,7 @@ boot_continue:
 
   /* USER CODE END 2 */
 
-  /* ══════════════════════════════════════════════════════
-   * LOOP PRINCIPALE — macchina a stati
-   * ══════════════════════════════════════════════════════ */
+  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
@@ -392,6 +408,7 @@ boot_continue:
      * in spin-wait finché arriva un dito (PC5) o un comando
      * remoto "ENROLL_START" dall'ESP32.                      */
     case S_STANDBY:
+    	//flagFinger = 0;
         ShowLCD("   Magic Box   ", "Attesa impronta");
         LED_OffAll();
         flagFinger = 0;
@@ -471,7 +488,9 @@ boot_continue:
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;
         }
-        HAL_Delay(50);
+        else{
+        	HAL_Delay(50);
+        }
         break;
 
     /* ── S_RESULT_OK ───────────────────────────────────────
@@ -514,6 +533,7 @@ boot_continue:
     } /* end switch */
 
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -521,7 +541,7 @@ boot_continue:
 
 /**
   * @brief System Clock Configuration
-  * (contenuto generato da STM32CubeMX — non modificare)
+  * @retval None
   */
 void SystemClock_Config(void)
 {
@@ -529,6 +549,9 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
@@ -537,29 +560,51 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL6;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) Error_Handler();
 
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
   PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART2
                               |RCC_PERIPHCLK_USART3|RCC_PERIPHCLK_I2C1;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
   PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
   PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) Error_Handler();
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
-/* Funzioni di inizializzazione periferiche (generate da CubeMX) ------------ */
-
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_I2C1_Init(void)
 {
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.Timing = 0x00201D2B;
   hi2c1.Init.OwnAddress1 = 0;
@@ -569,13 +614,46 @@ static void MX_I2C1_Init(void)
   hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) Error_Handler();
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) Error_Handler();
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
 }
 
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_SPI1_Init(void)
 {
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
@@ -590,11 +668,31 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CRCPolynomial = 7;
   hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
   hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART2_UART_Init(void)
 {
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 57600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -605,11 +703,31 @@ static void MX_USART2_UART_Init(void)
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
   huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
 }
 
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART3_UART_Init(void)
 {
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
   huart3.Instance = USART3;
   huart3.Init.BaudRate = 115200;
   huart3.Init.WordLength = UART_WORDLENGTH_8B;
@@ -620,24 +738,60 @@ static void MX_USART3_UART_Init(void)
   huart3.Init.OverSampling = UART_OVERSAMPLING_16;
   huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart3) != HAL_OK) Error_Handler();
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
 }
 
+/**
+  * @brief USB Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USB_PCD_Init(void)
 {
+
+  /* USER CODE BEGIN USB_Init 0 */
+
+  /* USER CODE END USB_Init 0 */
+
+  /* USER CODE BEGIN USB_Init 1 */
+
+  /* USER CODE END USB_Init 1 */
   hpcd_USB_FS.Instance = USB;
   hpcd_USB_FS.Init.dev_endpoints = 8;
   hpcd_USB_FS.Init.speed = PCD_SPEED_FULL;
   hpcd_USB_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
   hpcd_USB_FS.Init.low_power_enable = DISABLE;
   hpcd_USB_FS.Init.battery_charging_enable = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK) Error_Handler();
+  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_Init 2 */
+
+  /* USER CODE END USB_Init 2 */
+
 }
 
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
 
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
@@ -645,34 +799,43 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, CS_I2C_SPI_Pin|LD4_Pin|LD3_Pin|LD5_Pin
-                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin|LD6_Pin, GPIO_PIN_RESET);
+                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin
+                          |LD6_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, LCD_RS_Pin|LCD_EN_Pin|LCD_D4_Pin|LCD_D5_Pin
                           |LCD_D6_Pin|LCD_D7_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : DRDY_Pin MEMS_INT3_Pin MEMS_INT2_Pin */
   GPIO_InitStruct.Pin = DRDY_Pin|MEMS_INT3_Pin|MEMS_INT2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : CS_I2C_SPI_Pin LD4_Pin LD3_Pin LD5_Pin
+                           LD7_Pin LD9_Pin LD10_Pin LD8_Pin
+                           LD6_Pin */
   GPIO_InitStruct.Pin = CS_I2C_SPI_Pin|LD4_Pin|LD3_Pin|LD5_Pin
-                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin|LD6_Pin;
+                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin
+                          |LD6_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
+  /*Configure GPIO pin : PC5 */
   GPIO_InitStruct.Pin = GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : LCD_RS_Pin LCD_EN_Pin LCD_D4_Pin LCD_D5_Pin
+                           LCD_D6_Pin LCD_D7_Pin */
   GPIO_InitStruct.Pin = LCD_RS_Pin|LCD_EN_Pin|LCD_D4_Pin|LCD_D5_Pin
                           |LCD_D6_Pin|LCD_D7_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -680,21 +843,29 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;  /* Buzzer PB8 · Serratura PB9 */
+  /*Configure GPIO pins : PB8 PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+  /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 /* USER CODE END 4 */
 
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -702,11 +873,17 @@ void Error_Handler(void)
   while (1) {}
   /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
   /* USER CODE END 6 */
 }
-#endif
+#endif /* USE_FULL_ASSERT */

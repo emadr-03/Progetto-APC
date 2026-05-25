@@ -412,6 +412,10 @@ void setup() {
         Serial.print('.');
     }
     Serial.println(WiFi.status() == WL_CONNECTED ? " OK" : " FAIL");
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.print("ESP32 IP: ");
+        Serial.println(WiFi.localIP());
+    }
 
     /* NTP Italia - CEST (ora legale) UTC+2 */
     configTime(3600, 3600, "pool.ntp.org");

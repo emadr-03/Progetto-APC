@@ -34,7 +34,6 @@ struct User {
 
 sqlite3* db = nullptr;
 const char* DB_PATH = "/littlefs/smartlock.db";
-#define SEED_DEFAULT_USERS 0
 
 enum EnrollState {
     ENROLL_IDLE = 0,
@@ -128,18 +127,6 @@ void initDB() {
         return;
     }
 
-#if SEED_DEFAULT_USERS
-    const char* seedSQL =
-        "INSERT OR IGNORE INTO users (id, name, role, has_access) VALUES"
-        "  (1, 'Domenico', 'Proprietario', 1),"
-        "  (2, 'Giovanni', 'Familiare',    1),"
-        "  (3, 'Antonio',  'Ospite',       1),"
-        "  (4, 'Emanuele', 'Ex-ospite',    1);";
-
-    if (sqlite3_exec(db, seedSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
-        sqlite3_free(errMsg);
-    }
-#endif
 }
 
 User findUser(uint8_t targetId) {
@@ -213,23 +200,6 @@ bool update_or_insertUser(uint8_t id, const char* name, const char* role, bool a
     sqlite3_bind_text(stmt, 2, name, -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 3, role, -1, SQLITE_TRANSIENT);
     sqlite3_bind_int (stmt, 4, access ? 1 : 0);
-
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-    sqlite3_finalize(stmt);
-    return ok;
-}
-
-/* Revoca o ripristina l'accesso senza eliminare l'utente */
-bool setAccess(uint8_t id, bool access) {
-    const char* sql = "UPDATE users SET has_access = ? WHERE id = ?;";
-    sqlite3_stmt* stmt;
-
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return false;
-    }
-
-    sqlite3_bind_int(stmt, 1, access ? 1 : 0);
-    sqlite3_bind_int(stmt, 2, id);
 
     bool ok = sqlite3_step(stmt) == SQLITE_DONE;
     sqlite3_finalize(stmt);

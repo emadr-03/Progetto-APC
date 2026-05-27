@@ -168,11 +168,7 @@ static void Buzz(uint32_t ms) {
     HAL_GPIO_WritePin(BUZ_PORT, BUZ_PIN, GPIO_PIN_RESET);
 }
 
-/* Pattern buzzer:
- *   BuzzBoot    — 1 bip medio (200 ms)     : sistema pronto
- *   BuzzOK      — 1 bip lungo (500 ms)     : accesso concesso
- *   BuzzFail    — 3 bip rapidi (100 ms)    : accesso negato / errore
- *   BuzzConfirm — 1 bip breve (80 ms)      : conferma acquisizione immagine */
+/* Buzzer: Boot=200ms · OK=500ms · Fail=3×100ms · Confirm=80ms */
 static void BuzzBoot(void)    { Buzz(200); }
 static void BuzzOK(void)      { Buzz(500); }
 static void BuzzFail(void)    { Buzz(100); HAL_Delay(80); Buzz(100); HAL_Delay(80); Buzz(100); }
@@ -198,14 +194,8 @@ static void SendESP(const char* msg) {
 
 /* ────────────────────────────────────────────────────────────────────────────
  * RunEnroll — procedura guidata di registrazione impronta
- *
- * Cerca prima il primo slot libero tramite AS608_FindFreeSlot(), che usa
- * LoadChar per sondare la libreria senza affidarsi a un contatore RAM.
- * Parte da slot 1 per evitare ID 0 non gestito dall'ESP32.
- *
- * Flusso:
- *   FindFreeSlot → GetImage → GenChar(1) → [dito tolto]
- *   → GetImage → GenChar(2) → RegModel → StoreChar(slot)
+ * Cerca il primo slot libero (FindFreeSlot via LoadChar), acquisisce due
+ * immagini, genera il modello e lo salva. Parte da slot 1 (ID 0 ignorato).
  * ───────────────────────────────────────────────────────────────────────── */
 static void RunEnroll(void) {
 
@@ -388,7 +378,7 @@ int main(void)
       HAL_Delay(2000);
   }
 
-//Salto incondizionato se la configurazione del lettore d'impronta fallisce e di conseguenza annulla il reset del db locale
+/* Destinazione goto: salta il reset hardware se AS608_VerifyPassword() fallisce */
 boot_continue:
 
   /* 2. Splash screen ──────────────────────────────────── */
@@ -422,18 +412,16 @@ boot_continue:
     switch (appState) {
 
     /* ── S_STANDBY ─────────────────────────────────────────
-     * Stato di riposo. Mostra la schermata principale e rimane
-     * in spin-wait finché arriva un dito (PC5) o un comando
-     * remoto "ENROLL_START" dall'ESP32.                      */
+     * Stato di riposo. Rimane in spin-wait finché arriva un
+     * dito (PC5) o un comando ESP32 via UART (ENROLL_START,
+     * DELETE_CHAR:<id>, AS608_RESET).                        */
     case S_STANDBY:
-    	//flagFinger = 0;
         ShowLCD("   Magic Box   ", "Attesa impronta");
         LED_OffAll();
         flagFinger = 0;
         while (!flagFinger && !rx3Ready) HAL_Delay(50);
 
         if (rx3Ready) {
-            //rx3Ready = 0;
             if (strcmp(rx3Buf, "ENROLL_START") == 0) {
                 appState = S_ENROLL;
             } else if (strncmp(rx3Buf, "DELETE_CHAR:", 12) == 0) {
@@ -539,9 +527,6 @@ boot_continue:
             if (strncmp(rx3Buf, "AUTH_RESULT:", 12) == 0) {
                 appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK : S_RESULT_FAIL;
             }
-            /*else{
-            	espTimer = HAL_GetTick();  // messaggio spurio: resetta il timeout
-            }*/
         } else if (HAL_GetTick() - espTimer > 1500) {
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;

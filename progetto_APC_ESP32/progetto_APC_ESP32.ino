@@ -85,7 +85,7 @@ void    startEnrollment(const char* first, const char* last);
 void    onEnrollResult(const char* payload);
 void    addEvent(const char* type, const char* message);
 void    resetEnrollment();
-void    resetUserDatabase();
+bool    resetUserDatabase();
 void    setEnrollError(const char* reason);
 void    setEnrollDone(uint8_t id, const char* fullName);
 bool    checkApiKey();
@@ -250,14 +250,24 @@ void resetEnrollment() {
     enroll.completedMs = 0;
 }
 
-void resetUserDatabase() {
-    if (db) {
-        char* errMsg = nullptr;
-        sqlite3_exec(db, "DELETE FROM users;", nullptr, nullptr, &errMsg);
-        if (errMsg) sqlite3_free(errMsg);
+bool resetUserDatabase() {
+    if (!db) {
+        addEvent("error", "DB reset fallito: database non aperto");
+        return false;
+    }
+    char* errMsg = nullptr;
+    int rc = sqlite3_exec(db, "DELETE FROM users;", nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "DB reset fallito: %s",
+                 errMsg ? errMsg : "errore sconosciuto");
+        sqlite3_free(errMsg);
+        addEvent("error", msg);
+        return false;
     }
     resetEnrollment();
     addEvent("db_reset", "User database reset");
+    return true;
 }
 
 void sendJson(int code, const char* body) {
@@ -749,14 +759,19 @@ void handleApiReset() {
         if (!got_resp) delay(50);
     }
 
-    if (stm_ok) {
-        resetUserDatabase();
-        addEvent("db_reset", "Full reset: AS608 + DB azzerati");
-        sendJson(200, "{\"ok\":true,\"as608\":true}");
-    } else {
+    if (!stm_ok) {
         addEvent("error", "Reset annullato: AS608 non risponde (timeout o errore sensore)");
         sendJson(200, "{\"ok\":false,\"as608\":false}");
+        return;
     }
+
+    if (!resetUserDatabase()) {
+        /* AS608 azzerato ma SQLite fallito — stato già loggato da resetUserDatabase() */
+        sendJson(200, "{\"ok\":false,\"as608\":true,\"error\":\"db_error\"}");
+        return;
+    }
+
+    sendJson(200, "{\"ok\":true,\"as608\":true}");
 }
 
 /* ── Helpers ─────────────────────────────────────── */

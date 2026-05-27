@@ -362,8 +362,13 @@ ui.resetDbBtn?.addEventListener('click', async () => {
     return;
   }
 
-  if (!res.data?.ok) {
+  if (!res.data?.ok && !res.data?.as608) {
     alert('Reset annullato: il sensore AS608 non risponde.\nNessun dato è stato eliminato.');
+    return;
+  }
+
+  if (!res.data?.ok && res.data?.as608) {
+    alert('Attenzione: le impronte sono state cancellate dall\'AS608\nma il database SQLite non è stato azzerato (errore interno).\nRiprova il reset.');
     return;
   }
 

@@ -94,7 +94,8 @@ WebServer      server(80);
 
 /* ── Buffer UART ─────────────────────────────────── */
 char    rxBuf[128];
-uint8_t rxIdx = 0;
+uint8_t rxIdx    = 0;
+bool    rxDiscard = false;   /* true = riga corrente contaminata, scarta fino a '\n' */
 
 /* ══════════════════════════════════════════════════ */
 
@@ -495,16 +496,21 @@ void loop() {
         char c = (char)stm.read();
 
         if (c == '\n') {
-            rxBuf[rxIdx] = '\0';
-            if (rxIdx > 0) handle(rxBuf);
-            rxIdx = 0;
-        } else if (c != '\r' && rxIdx < 126) {
-            /* Scarta byte non-ASCII (EMI dal relè genera 0xFF, 0x00, ecc.).
-             * Se arriva un byte spuro, azzera il buffer parziale così il
-             * prossimo comando valido parte sempre da posizione 0.          */
+            /* Fine riga: processa solo se non contaminata da byte spuri */
+            if (!rxDiscard) {
+                rxBuf[rxIdx] = '\0';
+                if (rxIdx > 0) handle(rxBuf);
+            }
+            rxIdx    = 0;
+            rxDiscard = false;
+        } else if (c != '\r') {
             if ((uint8_t)c < 32 || (uint8_t)c > 126) {
-                rxIdx = 0;
-            } else {
+                /* Byte non-ASCII (EMI): scarta l'intera riga corrente.
+                 * Azzerare solo rxIdx non basta — il resto della riga
+                 * (es. "TH_REQUEST:1") verrebbe processato parziale.  */
+                rxDiscard = true;
+                rxIdx     = 0;
+            } else if (!rxDiscard && rxIdx < 126) {
                 rxBuf[rxIdx++] = c;
             }
         }

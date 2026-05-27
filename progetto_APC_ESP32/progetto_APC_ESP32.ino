@@ -78,6 +78,8 @@ void    handleApiEnroll();
 void    handleApiEnrollStatus();
 void    handleApiHealth();
 void    handleApiEvents();
+void    handleApiUsers();
+void    handleApiUserPatch();
 void    startEnrollment(const char* first, const char* last);
 void    onEnrollResult(const char* payload);
 void    addEvent(const char* type, const char* message);
@@ -421,6 +423,8 @@ void setupServer() {
     server.on("/api/enroll",        HTTP_POST, handleApiEnroll);
     server.on("/api/enroll/status", HTTP_GET,  handleApiEnrollStatus);
     server.on("/api/events",        HTTP_GET,  handleApiEvents);
+    server.on("/api/users",         HTTP_GET,   handleApiUsers);
+    server.on("/api/users",         HTTP_PATCH, handleApiUserPatch);
     server.begin();
 }
 
@@ -588,6 +592,67 @@ void handle(const char* cmd) {
         addEvent("error", cmd + 4);
         return;
     }
+}
+
+void handleApiUserPatch() {
+    if (!checkApiKey()) return;
+
+    String body = server.arg("plain");
+    StaticJsonDocument<256> req;
+    if (deserializeJson(req, body)) {
+        sendJson(400, "{\"ok\":false,\"error\":\"bad_json\"}");
+        return;
+    }
+
+    if (!req.containsKey("id")) {
+        sendJson(400, "{\"ok\":false,\"error\":\"missing_id\"}");
+        return;
+    }
+
+    uint8_t id = (uint8_t)req["id"].as<int>();
+    User u = findUser(id);
+    if (!u.found) {
+        sendJson(404, "{\"ok\":false,\"error\":\"not_found\"}");
+        return;
+    }
+
+    const char* name      = req.containsKey("name")       ? req["name"].as<const char*>() : u.name;
+    const char* role      = req.containsKey("role")       ? req["role"].as<const char*>() : u.role;
+    bool        hasAccess = req.containsKey("has_access") ? req["has_access"].as<bool>()  : u.hasAccess;
+
+    if (!update_or_insertUser(id, name, role, hasAccess)) {
+        sendJson(500, "{\"ok\":false,\"error\":\"db_error\"}");
+        return;
+    }
+
+    sendJson(200, "{\"ok\":true}");
+}
+
+void handleApiUsers() {
+    if (!checkApiKey()) return;
+
+    DynamicJsonDocument doc(4096);
+    doc["ok"] = true;
+    JsonArray arr = doc.createNestedArray("users");
+
+    if (db) {
+        const char* sql = "SELECT id, name, role, has_access FROM users ORDER BY id;";
+        sqlite3_stmt* stmt;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            while (sqlite3_step(stmt) == SQLITE_ROW) {
+                JsonObject u = arr.createNestedObject();
+                u["id"]         = sqlite3_column_int(stmt, 0);
+                u["name"]       = (const char*)sqlite3_column_text(stmt, 1);
+                u["role"]       = (const char*)sqlite3_column_text(stmt, 2);
+                u["has_access"] = sqlite3_column_int(stmt, 3) == 1;
+            }
+            sqlite3_finalize(stmt);
+        }
+    }
+
+    String out;
+    serializeJson(doc, out);
+    server.send(200, "application/json", out);
 }
 
 void setEnrollError(const char* reason) {

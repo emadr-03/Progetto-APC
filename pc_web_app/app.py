@@ -110,5 +110,18 @@ def api_events():
     return jsonify(data), status
 
 
+@app.route("/api/users", methods=["GET"])
+def api_users():
+    data, status = esp32_request("GET", "/api/users")
+    return jsonify(data), status
+
+
+@app.route("/api/users", methods=["PATCH"])
+def api_users_patch():
+    payload = request.get_json(silent=True) or {}
+    data, status = esp32_request("PATCH", "/api/users", json_payload=payload)
+    return jsonify(data), status
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

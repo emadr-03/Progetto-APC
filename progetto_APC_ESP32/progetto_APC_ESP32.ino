@@ -499,7 +499,14 @@ void loop() {
             if (rxIdx > 0) handle(rxBuf);
             rxIdx = 0;
         } else if (c != '\r' && rxIdx < 126) {
-            rxBuf[rxIdx++] = c;
+            /* Scarta byte non-ASCII (EMI dal relè genera 0xFF, 0x00, ecc.).
+             * Se arriva un byte spuro, azzera il buffer parziale così il
+             * prossimo comando valido parte sempre da posizione 0.          */
+            if ((uint8_t)c < 32 || (uint8_t)c > 126) {
+                rxIdx = 0;
+            } else {
+                rxBuf[rxIdx++] = c;
+            }
         }
     }
 

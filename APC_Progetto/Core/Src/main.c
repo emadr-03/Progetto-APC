@@ -447,14 +447,41 @@ boot_continue:
                 appState = S_STANDBY;
             } else if (strcmp(rx3Buf, "AS608_RESET") == 0) {
                 ShowLCD("Reset DB...    ", "In corso...    ");
-                if (AS608_VerifyPassword() == AS608_OK) {
-                    AS608_EmptyDB();
+                if (AS608_VerifyPassword() != AS608_OK) {
+                    ShowLCD("Errore Sensore ", "Reset annullato");
+                    SendESP("AS608_RESET_ERR");
+                    BuzzFail();
                     HAL_Delay(1500);
+                    appState = S_STANDBY;
+                    break;
+                }
+
+                /* Tentativo 1: EmptyDB bulk */
+                AS608_EmptyDB();
+                HAL_Delay(1500);
+
+                /* Verifica effettiva: slot 0 e slot 1 devono essere vuoti */
+                uint8_t r0 = (AS608_LoadChar(AS608_CHARBUF_2, 0) == AS608_OK);
+                uint8_t r1 = (AS608_LoadChar(AS608_CHARBUF_2, 1) == AS608_OK);
+
+                if (r0 || r1) {
+                    /* EmptyDB non ha funzionato — fallback: DeleteChar slot per slot */
+                    ShowLCD("Pulizia manuale", "Attendere...   ");
+                    for (uint8_t i = 0; i <= 127; i++) {
+                        if (AS608_LoadChar(AS608_CHARBUF_2, i) == AS608_OK) {
+                            AS608_DeleteChar(i);
+                        }
+                        HAL_Delay(50);
+                    }
+                }
+
+                /* Verifica finale */
+                if (AS608_LoadChar(AS608_CHARBUF_2, 1) != AS608_OK) {
                     ShowLCD("Database       ", "Azzerato!      ");
                     SendESP("AS608_RESET_OK");
                     Buzz(500);
                 } else {
-                    ShowLCD("Errore Sensore ", "Reset annullato");
+                    ShowLCD("Errore Reset   ", "Riprovare      ");
                     SendESP("AS608_RESET_ERR");
                     BuzzFail();
                 }

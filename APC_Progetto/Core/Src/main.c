@@ -525,7 +525,7 @@ boot_continue:
         LED_Set(LED_GREEN, 1);
         BuzzOK();
         Lock_Open();            /* PB9 HIGH — serratura aperta  */
-        HAL_Delay(2000);
+        HAL_Delay(1000);
         Lock_Close();           /* PB9 LOW  — serratura chiusa  */
         LED_OffAll();
         appState = S_STANDBY;

@@ -357,6 +357,7 @@ int main(void)
           /* Verifica finale dopo cancellazione manuale */
           if (AS608_LoadChar(AS608_CHARBUF_2, 1) != AS608_OK) {
               ShowLCD("Database       ", "Azzerato!      ");
+              SendESP("DB_RESET");
               Buzz(500);
           } else {
               ShowLCD("Errore Reset   ", "Riprovare      ");
@@ -365,12 +366,14 @@ int main(void)
       } else {
           /* EmptyDB ha funzionato */
           ShowLCD("Database       ", "Azzerato!      ");
+          SendESP("DB_RESET");
           Buzz(500);
       }
 
       HAL_Delay(2000);
   }
 
+//Salto incondizionato se la configurazione del lettore d'impronta fallisce e di conseguenza annulla il reset del db locale
 boot_continue:
 
   /* 2. Splash screen ──────────────────────────────────── */
@@ -415,12 +418,13 @@ boot_continue:
         while (!flagFinger && !rx3Ready) HAL_Delay(50);
 
         if (rx3Ready) {
-            rx3Ready = 0;
+            //rx3Ready = 0;
             if (strcmp(rx3Buf, "ENROLL_START") == 0) {
                 appState = S_ENROLL;
             } else {
                 appState = S_STANDBY;
             }
+            rx3Ready = 0;
         } else {
             flagFinger = 0;
             appState   = S_IDENTIFY;
@@ -450,12 +454,14 @@ boot_continue:
             char req[32];
             snprintf(req, sizeof(req), "AUTH_REQUEST:%d", fid);
 
+            ShowLCD("Verifica...    ", "               ");
+
             /* Pulisci buffer PRIMA di inviare la richiesta */
             rx3Ready = 0;
             rx3Idx   = 0;
 
             SendESP(req);
-            ShowLCD("Verifica...    ", "               ");
+            //ShowLCD("Verifica...    ", "               ");
             espTimer = HAL_GetTick();
             appState = S_WAIT_ESP;
         } else if (r == AS608_ERR_TIMEOUT) {
@@ -471,7 +477,7 @@ boot_continue:
     }
 
     /* ── S_WAIT_ESP ────────────────────────────────────────
-     * Attende la risposta dell'ESP32 entro 5 secondi.
+     * Attende la risposta dell'ESP32 entro 10 secondi.
      * Messaggio atteso: "AUTH_RESULT:<id>:GRANTED|DENIED"
      *
      * IMPORTANTE: il timeout è else-if — se rx3Ready è già
@@ -481,9 +487,11 @@ boot_continue:
         if (rx3Ready) {
             rx3Ready = 0;
             if (strncmp(rx3Buf, "AUTH_RESULT:", 12) == 0) {
-                appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK
-                                                      : S_RESULT_FAIL;
+                appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK : S_RESULT_FAIL;
             }
+            /*else{
+            	espTimer = HAL_GetTick();  // messaggio spurio: resetta il timeout
+            }*/
         } else if (HAL_GetTick() - espTimer > 10000) {
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;
@@ -827,6 +835,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PA0 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PC5 */
   GPIO_InitStruct.Pin = GPIO_PIN_5;

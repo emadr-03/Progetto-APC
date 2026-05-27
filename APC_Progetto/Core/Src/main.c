@@ -506,7 +506,7 @@ boot_continue:
             /*else{
             	espTimer = HAL_GetTick();  // messaggio spurio: resetta il timeout
             }*/
-        } else if (HAL_GetTick() - espTimer > 3000) {
+        } else if (HAL_GetTick() - espTimer > 1500) {
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;
         }

@@ -663,7 +663,11 @@ void handleApiUserDelete() {
 
     String body = server.arg("plain");
     StaticJsonDocument<128> req;
-    if (deserializeJson(req, body) || !req.containsKey("id")) {
+    if (deserializeJson(req, body)) {
+        sendJson(400, "{\"ok\":false,\"error\":\"bad_json\"}");
+        return;
+    }
+    if (!req.containsKey("id")) {
         sendJson(400, "{\"ok\":false,\"error\":\"missing_id\"}");
         return;
     }

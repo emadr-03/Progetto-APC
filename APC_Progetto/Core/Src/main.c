@@ -436,6 +436,27 @@ boot_continue:
             //rx3Ready = 0;
             if (strcmp(rx3Buf, "ENROLL_START") == 0) {
                 appState = S_ENROLL;
+            } else if (strncmp(rx3Buf, "DELETE_CHAR:", 12) == 0) {
+                uint8_t delId = (uint8_t)atoi(rx3Buf + 12);
+                char resp[32];
+                uint8_t attempts = 0;
+                uint8_t deleted  = 0;
+                while (attempts < 3 && !deleted) {
+                    AS608_DeleteChar(delId);
+                    HAL_Delay(300);
+                    /* LoadChar OK → slot ancora occupato; errore → slot libero */
+                    if (AS608_LoadChar(AS608_CHARBUF_2, delId) != AS608_OK) {
+                        deleted = 1;
+                    } else if (attempts < 2) {
+                        HAL_Delay(200);
+                    }
+                    attempts++;
+                }
+                snprintf(resp, sizeof(resp),
+                         deleted ? "DELETE_CHAR_OK:%u" : "DELETE_CHAR_ERR:%u",
+                         (unsigned)delId);
+                SendESP(resp);
+                appState = S_STANDBY;
             } else if (strcmp(rx3Buf, "AS608_RESET") == 0) {
                 ShowLCD("Reset DB...    ", "In corso...    ");
                 if (AS608_VerifyPassword() == AS608_OK) {

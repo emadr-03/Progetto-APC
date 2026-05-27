@@ -123,6 +123,13 @@ def api_users_patch():
     return jsonify(data), status
 
 
+@app.route("/api/users", methods=["DELETE"])
+def api_users_delete():
+    payload = request.get_json(silent=True) or {}
+    data, status = esp32_request("DELETE", "/api/users", json_payload=payload, timeout=8)
+    return jsonify(data), status
+
+
 @app.route("/api/reset", methods=["POST"])
 def api_reset():
     data, status = esp32_request("POST", "/api/reset", timeout=15)

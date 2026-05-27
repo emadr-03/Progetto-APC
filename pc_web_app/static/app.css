@@ -420,6 +420,18 @@ h2 {
   transition: color 0.15s, background 0.15s;
 }
 .edit-btn:hover { color: var(--ink); background: rgba(0,0,0,0.05); }
+.del-btn {
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  color: var(--subtle);
+  font-size: 14px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  transition: color 0.15s, background 0.15s;
+}
+.del-btn:hover { color: var(--red); background: var(--red-bg); }
+.del-btn:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Modal ── */
 .modal-overlay {

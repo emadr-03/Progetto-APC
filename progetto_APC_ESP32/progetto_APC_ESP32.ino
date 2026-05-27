@@ -80,6 +80,7 @@ void    handleApiHealth();
 void    handleApiEvents();
 void    handleApiUsers();
 void    handleApiUserPatch();
+void    handleApiUserDelete();
 void    handleApiReset();
 void    startEnrollment(const char* first, const char* last);
 void    onEnrollResult(const char* payload);
@@ -281,12 +282,10 @@ void resetEnrollment() {
 
 void resetUserDatabase() {
     if (db) {
-        sqlite3_close(db);
-        db = nullptr;
+        char* errMsg = nullptr;
+        sqlite3_exec(db, "DELETE FROM users;", nullptr, nullptr, &errMsg);
+        if (errMsg) sqlite3_free(errMsg);
     }
-
-    LittleFS.remove(DB_PATH);
-    initDB();
     resetEnrollment();
     addEvent("db_reset", "User database reset");
 }
@@ -424,9 +423,10 @@ void setupServer() {
     server.on("/api/enroll",        HTTP_POST, handleApiEnroll);
     server.on("/api/enroll/status", HTTP_GET,  handleApiEnrollStatus);
     server.on("/api/events",        HTTP_GET,  handleApiEvents);
-    server.on("/api/users",         HTTP_GET,   handleApiUsers);
-    server.on("/api/users",         HTTP_PATCH, handleApiUserPatch);
-    server.on("/api/reset",         HTTP_POST,  handleApiReset);
+    server.on("/api/users",         HTTP_GET,    handleApiUsers);
+    server.on("/api/users",         HTTP_PATCH,  handleApiUserPatch);
+    server.on("/api/users",         HTTP_DELETE, handleApiUserDelete);
+    server.on("/api/reset",         HTTP_POST,   handleApiReset);
     server.begin();
 }
 
@@ -676,6 +676,77 @@ void setEnrollDone(uint8_t id, const char* fullName) {
     char msg[128];
     snprintf(msg, sizeof(msg), "Enrollment ok: %s (ID %u)", fullName, (unsigned)id);
     addEvent("enroll_ok", msg);
+}
+
+void handleApiUserDelete() {
+    if (!checkApiKey()) return;
+
+    String body = server.arg("plain");
+    StaticJsonDocument<128> req;
+    if (deserializeJson(req, body) || !req.containsKey("id")) {
+        sendJson(400, "{\"ok\":false,\"error\":\"missing_id\"}");
+        return;
+    }
+
+    uint8_t id = (uint8_t)req["id"].as<int>();
+    User u = findUser(id);
+    if (!u.found) {
+        sendJson(404, "{\"ok\":false,\"error\":\"not_found\"}");
+        return;
+    }
+
+    /* Invia DELETE_CHAR:<id> alla STM32 e attendi conferma (max 5 s) */
+    while (stm.available()) stm.read();
+    {
+        char cmd[24];
+        snprintf(cmd, sizeof(cmd), "DELETE_CHAR:%u", (unsigned)id);
+        stm.println(cmd);
+    }
+
+    char     respBuf[32];
+    uint8_t  respIdx  = 0;
+    bool     stm_ok   = false;
+    bool     got_resp = false;
+    uint32_t t0       = millis();
+
+    while (!got_resp && millis() - t0 < 5000) {
+        while (stm.available()) {
+            char c = (char)stm.read();
+            if (c == '\n') {
+                respBuf[respIdx] = '\0';
+                char expected_ok[24], expected_err[24];
+                snprintf(expected_ok,  sizeof(expected_ok),  "DELETE_CHAR_OK:%u",  (unsigned)id);
+                snprintf(expected_err, sizeof(expected_err), "DELETE_CHAR_ERR:%u", (unsigned)id);
+                if (strcmp(respBuf, expected_ok)  == 0) { stm_ok = true;  got_resp = true; }
+                if (strcmp(respBuf, expected_err) == 0) { stm_ok = false; got_resp = true; }
+                respIdx = 0;
+            } else if (c != '\r') {
+                uint8_t b = (uint8_t)c;
+                if (b >= 32 && b <= 126 && respIdx < 30) respBuf[respIdx++] = c;
+            }
+        }
+        if (!got_resp) delay(50);
+    }
+
+    if (!stm_ok) {
+        char msg[64];
+        snprintf(msg, sizeof(msg),
+                 got_resp ? "Slot %u: DeleteChar fallito (AS608)" : "Slot %u: timeout risposta STM32",
+                 (unsigned)id);
+        addEvent("error", msg);
+        sendJson(200, "{\"ok\":false,\"as608\":false}");
+        return;
+    }
+
+    if (!deleteUser(id)) {
+        sendJson(500, "{\"ok\":false,\"error\":\"db_error\"}");
+        return;
+    }
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Utente eliminato: %s (slot %u)", u.name, (unsigned)id);
+    addEvent("db_reset", msg);
+    sendJson(200, "{\"ok\":true,\"as608\":true}");
 }
 
 void handleApiReset() {

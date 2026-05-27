@@ -60,6 +60,14 @@ const patchUser = async fields => {
   });
 };
 
+const deleteUser = async id => {
+  return jsonFetch('/api/users', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+};
+
 // ── Connection badge ──────────────────────────────────────────────────────────
 const setConn = ok => {
   ui.connBadge.className = 'conn-badge ' + (ok ? 'ok' : 'err');
@@ -194,7 +202,7 @@ const renderUsers = users => {
 
   let html =
     '<table class="users-table">' +
-    '<thead><tr><th>ID</th><th>Nome</th><th>Ruolo</th><th>Accesso</th><th></th></tr></thead>' +
+    '<thead><tr><th>ID</th><th>Nome</th><th>Ruolo</th><th>Accesso</th><th></th><th></th></tr></thead>' +
     '<tbody>';
   for (const u of state.users) {
     const badge = u.has_access
@@ -207,6 +215,7 @@ const renderUsers = users => {
       `<td class="user-role">${esc(u.role)}</td>` +
       `<td>${badge}</td>` +
       `<td><button class="edit-btn" data-id="${u.id}" title="Modifica">✎</button></td>` +
+      `<td><button class="del-btn" data-id="${u.id}" data-name="${esc(u.name)}" title="Elimina">🗑</button></td>` +
       `</tr>`;
   }
   html += '</tbody></table>';
@@ -230,6 +239,24 @@ const renderUsers = users => {
       const id   = parseInt(btn.dataset.id, 10);
       const user = state.users.find(u => u.id === id);
       if (user) openModal(user);
+    });
+  });
+
+  // Elimina utente
+  ui.usersBox.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id   = parseInt(btn.dataset.id, 10);
+      const name = btn.dataset.name;
+      if (!confirm(`Eliminare "${name}" (slot ${id})?\nL'impronta verrà rimossa dall'AS608 e dal database.`)) return;
+      btn.disabled = true;
+      const res = await deleteUser(id);
+      btn.disabled = false;
+      if (res.error) { alert('Errore di connessione.'); return; }
+      if (!res.data?.ok) {
+        alert('Eliminazione fallita: il sensore AS608 non ha liberato lo slot.\nL\'utente non è stato rimosso.');
+        return;
+      }
+      fetchUsers();
     });
   });
 };

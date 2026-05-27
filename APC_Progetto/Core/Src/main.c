@@ -4,7 +4,7 @@
   * @file    main.c
   * @brief   Smart Lock — STM32F3Discovery
   *          AS608  : USART2  PA2=TX  PA3=RX   57600 baud + EXTI5 su PC5
-  *          ESP32  : USART3  PB10=TX PB11=RX 115200 baud (ricezione IT)
+  *          ESP32  : USART1  PA9=TX  PA10=RX  115200 baud (ricezione IT)
   *          LCD    : 4-bit parallelo GPIOD  PD8=RS PD9=EN PD10-PD13=D4-D7
   *          Buzzer : PB8
   *          Serratura: PB9 — HIGH=aperto (2 s) LOW=chiuso
@@ -53,8 +53,8 @@ I2C_HandleTypeDef hi2c1;
 
 SPI_HandleTypeDef hspi1;
 
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
-UART_HandleTypeDef huart3;
 
 PCD_HandleTypeDef hpcd_USB_FS;
 
@@ -67,7 +67,7 @@ static AppState appState = S_STANDBY;
  * Dichiarati volatile per impedire ottimizzazioni del compilatore.         */
 static volatile uint8_t flagFinger = 0;   /* PC5 TCH — dito rilevato       */
 
-/* ── UART3 ricezione asincrona (ESP32 → STM32) ─────────────────────────── */
+/* ── UART1 ricezione asincrona (ESP32 → STM32) ─────────────────────────── */
 #define RX3_LEN   64
 static uint8_t          rx3Byte;               /* buffer singolo byte IT     */
 static char             rx3Buf[RX3_LEN];       /* riga accumulata            */
@@ -96,7 +96,7 @@ static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USB_PCD_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_USART3_UART_Init(void);
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void LED_Set(uint16_t pin, uint8_t on);
 static void LED_OffAll(void);
@@ -120,12 +120,12 @@ void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (GPIO_Pin == GPIO_PIN_5) flagFinger = 1;   /* TCH AS608     */
 }
 
-/* ── Callback UART3 (ESP32 → STM32) ────────────────────────────────────────
+/* ── Callback UART1 (ESP32 → STM32) ────────────────────────────────────────
  * Riceve un byte alla volta e assembla la riga fino a '\n'.
  * rx3Ready = 1 segnala che rx3Buf contiene una riga completa.
  * La callback si riarma immediatamente dopo ogni byte.                     */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef* h) {
-    if (h->Instance == USART3) {
+    if (h->Instance == USART1) {
         char c = (char)rx3Byte;
         if (c == '\n') {
             rx3Buf[rx3Idx] = '\0';
@@ -134,7 +134,22 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef* h) {
         } else if (c != '\r' && rx3Idx < RX3_LEN - 1) {
             rx3Buf[rx3Idx++] = c;
         }
-        HAL_UART_Receive_IT(&huart3, &rx3Byte, 1);
+        HAL_UART_Receive_IT(&huart1, &rx3Byte, 1);
+    }
+}
+
+/* ── Callback errore UART1 ──────────────────────────────────────────────────
+ * Il HAL chiama questa funzione quando USART1 riceve un errore
+ * (framing, noise, overrun) — tipicamente causato dal rumore EMI
+ * generato dal relè alla commutazione del solenoide.
+ * Senza override la catena HAL_UART_Receive_IT si interrompe
+ * definitivamente: la STM32 smette di ricevere dall'ESP32 finché
+ * non si resetta, causando timeout su tutti i tentativi successivi.
+ * Qui si azzera il buffer parziale e si riarma la ricezione.              */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef* h) {
+    if (h->Instance == USART1) {
+        rx3Idx = 0;                                  /* scarta byte corrotti */
+        HAL_UART_Receive_IT(h, &rx3Byte, 1);         /* riarma ricezione     */
     }
 }
 
@@ -174,11 +189,11 @@ static void ShowLCD(const char* l1, const char* l2) {
     LCD_SetCursor(0, 1); LCD_Print(l2);
 }
 
-/* ── Helper UART3 (invio verso ESP32) ──────────────────────────────────── */
+/* ── Helper UART1 (invio verso ESP32) ──────────────────────────────────── */
 static void SendESP(const char* msg) {
     char buf[80];
     uint16_t n = (uint16_t)snprintf(buf, sizeof(buf), "%s\r\n", msg);
-    HAL_UART_Transmit(&huart3, (uint8_t*)buf, n, 1000);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, n, 1000);
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -301,7 +316,7 @@ int main(void)
   MX_SPI1_Init();
   MX_USB_PCD_Init();
   MX_USART2_UART_Init();
-  MX_USART3_UART_Init();
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
   LCD_Init();
@@ -393,7 +408,7 @@ boot_continue:
   }
 
   /* 4. Avvio ricezione asincrona ESP32 + notifica boot ── */
-  HAL_UART_Receive_IT(&huart3, &rx3Byte, 1);
+  HAL_UART_Receive_IT(&huart1, &rx3Byte, 1);
   SendESP("BOOT:SYSTEM_OK");
 
   appState = S_STANDBY;
@@ -461,7 +476,6 @@ boot_continue:
             rx3Idx   = 0;
 
             SendESP(req);
-            //ShowLCD("Verifica...    ", "               ");
             espTimer = HAL_GetTick();
             appState = S_WAIT_ESP;
         } else if (r == AS608_ERR_TIMEOUT) {
@@ -492,7 +506,7 @@ boot_continue:
             /*else{
             	espTimer = HAL_GetTick();  // messaggio spurio: resetta il timeout
             }*/
-        } else if (HAL_GetTick() - espTimer > 10000) {
+        } else if (HAL_GetTick() - espTimer > 3000) {
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;
         }
@@ -586,10 +600,10 @@ void SystemClock_Config(void)
   {
     Error_Handler();
   }
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART2
-                              |RCC_PERIPHCLK_USART3|RCC_PERIPHCLK_I2C1;
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART1
+                              |RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C1;
+  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
   PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
@@ -687,6 +701,41 @@ static void MX_SPI1_Init(void)
 }
 
 /**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
   * @brief USART2 Initialization Function
   * @param None
   * @retval None
@@ -718,41 +767,6 @@ static void MX_USART2_UART_Init(void)
   /* USER CODE BEGIN USART2_Init 2 */
 
   /* USER CODE END USART2_Init 2 */
-
-}
-
-/**
-  * @brief USART3 Initialization Function
-  * @param None
-  * @retval None
-  */
-static void MX_USART3_UART_Init(void)
-{
-
-  /* USER CODE BEGIN USART3_Init 0 */
-
-  /* USER CODE END USART3_Init 0 */
-
-  /* USER CODE BEGIN USART3_Init 1 */
-
-  /* USER CODE END USART3_Init 1 */
-  huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
-  huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX_RX;
-  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart3) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /* USER CODE BEGIN USART3_Init 2 */
-
-  /* USER CODE END USART3_Init 2 */
 
 }
 
@@ -804,8 +818,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, CS_I2C_SPI_Pin|LD4_Pin|LD3_Pin|LD5_Pin

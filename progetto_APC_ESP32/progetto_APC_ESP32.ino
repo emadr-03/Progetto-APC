@@ -1,5 +1,5 @@
 /* esp32_smartlock.ino — MERGED (DEBUG + v3)
-   UART2: GPIO16=RX (da PB10-STM32TX), GPIO17=TX (verso PB11-STM32RX)
+   UART2: GPIO16=RX (da PA9-USART1_TX STM32), GPIO17=TX (verso PA10-USART1_RX STM32)
 */
 
 #include <WiFi.h>
@@ -15,8 +15,8 @@ const char* WIFI_PASS = "nonlasos";
 const char* API_KEY   = "Pendragon";     /* X-API-KEY per le chiamate HTTP */
 
 /* ── UART verso STM32 ────────────────────────────── */
-#define STM_RX   16    /* <- PB10 (USART3_TX STM32) */
-#define STM_TX   17    /* -> PB11 (USART3_RX STM32) */
+#define STM_RX   16    /* <- PA9  (USART1_TX STM32) */
+#define STM_TX   17    /* -> PA10 (USART1_RX STM32) */
 #define STM_BAUD 115200
 
 /* ── Database utenti ─────────────────────────────

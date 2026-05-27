@@ -574,7 +574,7 @@ boot_continue:
         ShowLCD("Accesso Negato ", "               ");
         LED_Set(LED_RED, 1);
         BuzzFail();
-        HAL_Delay(2000);
+        HAL_Delay(1500);
         LED_OffAll();
         appState = S_STANDBY;
         break;

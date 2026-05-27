@@ -436,6 +436,21 @@ boot_continue:
             //rx3Ready = 0;
             if (strcmp(rx3Buf, "ENROLL_START") == 0) {
                 appState = S_ENROLL;
+            } else if (strcmp(rx3Buf, "AS608_RESET") == 0) {
+                ShowLCD("Reset DB...    ", "In corso...    ");
+                if (AS608_VerifyPassword() == AS608_OK) {
+                    AS608_EmptyDB();
+                    HAL_Delay(1500);
+                    ShowLCD("Database       ", "Azzerato!      ");
+                    SendESP("AS608_RESET_OK");
+                    Buzz(500);
+                } else {
+                    ShowLCD("Errore Sensore ", "Reset annullato");
+                    SendESP("AS608_RESET_ERR");
+                    BuzzFail();
+                }
+                HAL_Delay(1500);
+                appState = S_STANDBY;
             } else {
                 appState = S_STANDBY;
             }

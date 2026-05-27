@@ -266,6 +266,13 @@ h2 {
 }
 .btn.ghost:hover { background: rgba(255, 255, 255, 0.9); }
 .btn.small { font-size: 12px; padding: 6px 12px; border-radius: 8px; }
+.btn.danger {
+  background: var(--red-bg);
+  color: var(--red);
+  border: 1px solid rgba(192, 57, 43, 0.25);
+}
+.btn.danger:hover { background: var(--red); color: #fff; }
+.btn.danger:disabled { opacity: 0.45; cursor: not-allowed; }
 
 /* ── Enrollment steps ── */
 .steps {
@@ -335,6 +342,11 @@ h2 {
   margin-bottom: 16px;
 }
 .users-header h2 { margin-bottom: 0; }
+.users-header-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
 .users-count {
   font-family: "IBM Plex Mono", monospace;
   font-size: 11px;

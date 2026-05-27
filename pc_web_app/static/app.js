@@ -17,6 +17,7 @@ const ui = {
   statGranted: $('stat-granted'),
   statDenied:  $('stat-denied'),
   statLast:    $('stat-last'),
+  resetDbBtn:  $('reset-db-btn'),
   // modal
   modalOverlay:    $('modal-overlay'),
   modalClose:      $('modal-close'),
@@ -312,6 +313,36 @@ ui.form?.addEventListener('submit', async e => {
 
 // ── Clear log ─────────────────────────────────────────────────────────────────
 ui.clearLog?.addEventListener('click', () => { ui.log.innerHTML = ''; });
+
+// ── Reset database ────────────────────────────────────────────────────────────
+ui.resetDbBtn?.addEventListener('click', async () => {
+  const confirmed = confirm(
+    'Attenzione: questa operazione cancellerà TUTTE le impronte dal sensore AS608 ' +
+    'e tutti gli utenti dal database.\n\nProcedere?'
+  );
+  if (!confirmed) return;
+
+  ui.resetDbBtn.disabled = true;
+  ui.resetDbBtn.textContent = 'Azzeramento…';
+
+  const res = await jsonFetch('/api/reset', { method: 'POST' });
+
+  ui.resetDbBtn.disabled = false;
+  ui.resetDbBtn.textContent = 'Azzera DB';
+
+  if (res.error) {
+    alert('Errore: impossibile raggiungere l\'ESP32.');
+    return;
+  }
+
+  if (!res.data?.ok) {
+    alert('Reset annullato: il sensore AS608 non risponde.\nNessun dato è stato eliminato.');
+    return;
+  }
+
+  alert('Reset completato: impronte AS608 e database SQLite azzerati.');
+  fetchUsers();
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 setStep('idle');

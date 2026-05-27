@@ -80,6 +80,7 @@ void    handleApiHealth();
 void    handleApiEvents();
 void    handleApiUsers();
 void    handleApiUserPatch();
+void    handleApiReset();
 void    startEnrollment(const char* first, const char* last);
 void    onEnrollResult(const char* payload);
 void    addEvent(const char* type, const char* message);
@@ -425,6 +426,7 @@ void setupServer() {
     server.on("/api/events",        HTTP_GET,  handleApiEvents);
     server.on("/api/users",         HTTP_GET,   handleApiUsers);
     server.on("/api/users",         HTTP_PATCH, handleApiUserPatch);
+    server.on("/api/reset",         HTTP_POST,  handleApiReset);
     server.begin();
 }
 
@@ -674,6 +676,46 @@ void setEnrollDone(uint8_t id, const char* fullName) {
     char msg[128];
     snprintf(msg, sizeof(msg), "Enrollment ok: %s (ID %u)", fullName, (unsigned)id);
     addEvent("enroll_ok", msg);
+}
+
+void handleApiReset() {
+    if (!checkApiKey()) return;
+
+    /* Svuota buffer UART in ingresso prima di inviare il comando */
+    while (stm.available()) stm.read();
+    stm.println("AS608_RESET");
+
+    char     respBuf[32];
+    uint8_t  respIdx  = 0;
+    bool     stm_ok   = false;
+    bool     got_resp = false;
+    uint32_t t0       = millis();
+
+    /* Attendi risposta STM32 per max 10 s */
+    while (!got_resp && millis() - t0 < 10000) {
+        while (stm.available()) {
+            char c = (char)stm.read();
+            if (c == '\n') {
+                respBuf[respIdx] = '\0';
+                if (strcmp(respBuf, "AS608_RESET_OK")  == 0) { stm_ok = true;  got_resp = true; }
+                if (strcmp(respBuf, "AS608_RESET_ERR") == 0) { stm_ok = false; got_resp = true; }
+                respIdx = 0;
+            } else if (c != '\r') {
+                uint8_t b = (uint8_t)c;
+                if (b >= 32 && b <= 126 && respIdx < 30) respBuf[respIdx++] = c;
+            }
+        }
+        if (!got_resp) delay(50);
+    }
+
+    if (stm_ok) {
+        resetUserDatabase();
+        addEvent("db_reset", "Full reset: AS608 + DB azzerati");
+        sendJson(200, "{\"ok\":true,\"as608\":true}");
+    } else {
+        addEvent("error", "Reset annullato: AS608 non risponde (timeout o errore sensore)");
+        sendJson(200, "{\"ok\":false,\"as608\":false}");
+    }
 }
 
 /* ── Helpers ─────────────────────────────────────── */

@@ -123,5 +123,11 @@ def api_users_patch():
     return jsonify(data), status
 
 
+@app.route("/api/reset", methods=["POST"])
+def api_reset():
+    data, status = esp32_request("POST", "/api/reset", timeout=15)
+    return jsonify(data), status
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

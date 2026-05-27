@@ -1,5 +1,5 @@
 /* esp32_smartlock.ino — MERGED (DEBUG + v3)
-   UART2: GPIO16=RX (da PB10-STM32TX), GPIO17=TX (verso PB11-STM32RX)
+   UART2: GPIO16=RX (da PA9-USART1_TX STM32), GPIO17=TX (verso PA10-USART1_RX STM32)
 */
 
 #include <WiFi.h>
@@ -15,8 +15,8 @@ const char* WIFI_PASS = "nonlasos";
 const char* API_KEY   = "Pendragon";     /* X-API-KEY per le chiamate HTTP */
 
 /* ── UART verso STM32 ────────────────────────────── */
-#define STM_RX   16    /* <- PB10 (USART3_TX STM32) */
-#define STM_TX   17    /* -> PB11 (USART3_RX STM32) */
+#define STM_RX   16    /* <- PA9  (USART1_TX STM32) */
+#define STM_TX   17    /* -> PA10 (USART1_RX STM32) */
 #define STM_BAUD 115200
 
 /* ── Database utenti ─────────────────────────────
@@ -94,7 +94,8 @@ WebServer      server(80);
 
 /* ── Buffer UART ─────────────────────────────────── */
 char    rxBuf[128];
-uint8_t rxIdx = 0;
+uint8_t rxIdx    = 0;
+bool    rxDiscard = false;   /* true = riga corrente contaminata, scarta fino a '\n' */
 
 /* ══════════════════════════════════════════════════ */
 
@@ -495,11 +496,23 @@ void loop() {
         char c = (char)stm.read();
 
         if (c == '\n') {
-            rxBuf[rxIdx] = '\0';
-            if (rxIdx > 0) handle(rxBuf);
-            rxIdx = 0;
-        } else if (c != '\r' && rxIdx < 126) {
-            rxBuf[rxIdx++] = c;
+            /* Fine riga: processa solo se non contaminata da byte spuri */
+            if (!rxDiscard) {
+                rxBuf[rxIdx] = '\0';
+                if (rxIdx > 0) handle(rxBuf);
+            }
+            rxIdx    = 0;
+            rxDiscard = false;
+        } else if (c != '\r') {
+            if ((uint8_t)c < 32 || (uint8_t)c > 126) {
+                /* Byte non-ASCII (EMI): scarta l'intera riga corrente.
+                 * Azzerare solo rxIdx non basta — il resto della riga
+                 * (es. "TH_REQUEST:1") verrebbe processato parziale.  */
+                rxDiscard = true;
+                rxIdx     = 0;
+            } else if (!rxDiscard && rxIdx < 126) {
+                rxBuf[rxIdx++] = c;
+            }
         }
     }
 

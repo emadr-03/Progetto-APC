@@ -17,6 +17,7 @@ const ui = {
   statGranted: $('stat-granted'),
   statDenied:  $('stat-denied'),
   statLast:    $('stat-last'),
+  resetDbBtn:  $('reset-db-btn'),
   // modal
   modalOverlay:    $('modal-overlay'),
   modalClose:      $('modal-close'),
@@ -56,6 +57,14 @@ const patchUser = async fields => {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(fields),
+  });
+};
+
+const deleteUser = async id => {
+  return jsonFetch('/api/users', {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
   });
 };
 
@@ -193,7 +202,7 @@ const renderUsers = users => {
 
   let html =
     '<table class="users-table">' +
-    '<thead><tr><th>ID</th><th>Nome</th><th>Ruolo</th><th>Accesso</th><th></th></tr></thead>' +
+    '<thead><tr><th>ID</th><th>Nome</th><th>Ruolo</th><th>Accesso</th><th></th><th></th></tr></thead>' +
     '<tbody>';
   for (const u of state.users) {
     const badge = u.has_access
@@ -206,6 +215,7 @@ const renderUsers = users => {
       `<td class="user-role">${esc(u.role)}</td>` +
       `<td>${badge}</td>` +
       `<td><button class="edit-btn" data-id="${u.id}" title="Modifica">✎</button></td>` +
+      `<td><button class="del-btn" data-id="${u.id}" data-name="${esc(u.name)}" title="Elimina">🗑</button></td>` +
       `</tr>`;
   }
   html += '</tbody></table>';
@@ -229,6 +239,24 @@ const renderUsers = users => {
       const id   = parseInt(btn.dataset.id, 10);
       const user = state.users.find(u => u.id === id);
       if (user) openModal(user);
+    });
+  });
+
+  // Elimina utente
+  ui.usersBox.querySelectorAll('.del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id   = parseInt(btn.dataset.id, 10);
+      const name = btn.dataset.name;
+      if (!confirm(`Eliminare "${name}" (slot ${id})?\nL'impronta verrà rimossa dall'AS608 e dal database.`)) return;
+      btn.disabled = true;
+      const res = await deleteUser(id);
+      btn.disabled = false;
+      if (res.error) { alert('Errore di connessione.'); return; }
+      if (!res.data?.ok) {
+        alert('Eliminazione fallita: il sensore AS608 non ha liberato lo slot.\nL\'utente non è stato rimosso.');
+        return;
+      }
+      fetchUsers();
     });
   });
 };
@@ -312,6 +340,41 @@ ui.form?.addEventListener('submit', async e => {
 
 // ── Clear log ─────────────────────────────────────────────────────────────────
 ui.clearLog?.addEventListener('click', () => { ui.log.innerHTML = ''; });
+
+// ── Reset database ────────────────────────────────────────────────────────────
+ui.resetDbBtn?.addEventListener('click', async () => {
+  const confirmed = confirm(
+    'Attenzione: questa operazione cancellerà TUTTE le impronte dal sensore AS608 ' +
+    'e tutti gli utenti dal database.\n\nProcedere?'
+  );
+  if (!confirmed) return;
+
+  ui.resetDbBtn.disabled = true;
+  ui.resetDbBtn.textContent = 'Azzeramento…';
+
+  const res = await jsonFetch('/api/reset', { method: 'POST' });
+
+  ui.resetDbBtn.disabled = false;
+  ui.resetDbBtn.textContent = 'Azzera DB';
+
+  if (res.error) {
+    alert('Errore: impossibile raggiungere l\'ESP32.');
+    return;
+  }
+
+  if (!res.data?.ok && !res.data?.as608) {
+    alert('Reset annullato: il sensore AS608 non risponde.\nNessun dato è stato eliminato.');
+    return;
+  }
+
+  if (!res.data?.ok && res.data?.as608) {
+    alert('Attenzione: le impronte sono state cancellate dall\'AS608\nma il database SQLite non è stato azzerato (errore interno).\nRiprova il reset.');
+    return;
+  }
+
+  alert('Reset completato: impronte AS608 e database SQLite azzerati.');
+  fetchUsers();
+});
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 setStep('idle');

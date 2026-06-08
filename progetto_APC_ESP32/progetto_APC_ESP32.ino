@@ -34,7 +34,6 @@ struct User {
 
 sqlite3* db = nullptr;
 const char* DB_PATH = "/littlefs/smartlock.db";
-#define SEED_DEFAULT_USERS 0
 
 enum EnrollState {
     ENROLL_IDLE = 0,
@@ -80,11 +79,13 @@ void    handleApiHealth();
 void    handleApiEvents();
 void    handleApiUsers();
 void    handleApiUserPatch();
+void    handleApiUserDelete();
+void    handleApiReset();
 void    startEnrollment(const char* first, const char* last);
 void    onEnrollResult(const char* payload);
 void    addEvent(const char* type, const char* message);
 void    resetEnrollment();
-void    resetUserDatabase();
+bool    resetUserDatabase();
 void    setEnrollError(const char* reason);
 void    setEnrollDone(uint8_t id, const char* fullName);
 bool    checkApiKey();
@@ -126,18 +127,6 @@ void initDB() {
         return;
     }
 
-#if SEED_DEFAULT_USERS
-    const char* seedSQL =
-        "INSERT OR IGNORE INTO users (id, name, role, has_access) VALUES"
-        "  (1, 'Domenico', 'Proprietario', 1),"
-        "  (2, 'Giovanni', 'Familiare',    1),"
-        "  (3, 'Antonio',  'Ospite',       1),"
-        "  (4, 'Emanuele', 'Ex-ospite',    1);";
-
-    if (sqlite3_exec(db, seedSQL, nullptr, nullptr, &errMsg) != SQLITE_OK) {
-        sqlite3_free(errMsg);
-    }
-#endif
 }
 
 User findUser(uint8_t targetId) {
@@ -217,23 +206,6 @@ bool update_or_insertUser(uint8_t id, const char* name, const char* role, bool a
     return ok;
 }
 
-/* Revoca o ripristina l'accesso senza eliminare l'utente */
-bool setAccess(uint8_t id, bool access) {
-    const char* sql = "UPDATE users SET has_access = ? WHERE id = ?;";
-    sqlite3_stmt* stmt;
-
-    if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-        return false;
-    }
-
-    sqlite3_bind_int(stmt, 1, access ? 1 : 0);
-    sqlite3_bind_int(stmt, 2, id);
-
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE;
-    sqlite3_finalize(stmt);
-    return ok;
-}
-
 /* Elimina un utente dal DB */
 bool deleteUser(uint8_t id) {
     const char* sql = "DELETE FROM users WHERE id = ?;";
@@ -278,16 +250,24 @@ void resetEnrollment() {
     enroll.completedMs = 0;
 }
 
-void resetUserDatabase() {
-    if (db) {
-        sqlite3_close(db);
-        db = nullptr;
+bool resetUserDatabase() {
+    if (!db) {
+        addEvent("error", "DB reset fallito: database non aperto");
+        return false;
     }
-
-    LittleFS.remove(DB_PATH);
-    initDB();
+    char* errMsg = nullptr;
+    int rc = sqlite3_exec(db, "DELETE FROM users;", nullptr, nullptr, &errMsg);
+    if (rc != SQLITE_OK) {
+        char msg[80];
+        snprintf(msg, sizeof(msg), "DB reset fallito: %s",
+                 errMsg ? errMsg : "errore sconosciuto");
+        sqlite3_free(errMsg);
+        addEvent("error", msg);
+        return false;
+    }
     resetEnrollment();
     addEvent("db_reset", "User database reset");
+    return true;
 }
 
 void sendJson(int code, const char* body) {
@@ -423,8 +403,10 @@ void setupServer() {
     server.on("/api/enroll",        HTTP_POST, handleApiEnroll);
     server.on("/api/enroll/status", HTTP_GET,  handleApiEnrollStatus);
     server.on("/api/events",        HTTP_GET,  handleApiEvents);
-    server.on("/api/users",         HTTP_GET,   handleApiUsers);
-    server.on("/api/users",         HTTP_PATCH, handleApiUserPatch);
+    server.on("/api/users",         HTTP_GET,    handleApiUsers);
+    server.on("/api/users",         HTTP_PATCH,  handleApiUserPatch);
+    server.on("/api/users",         HTTP_DELETE, handleApiUserDelete);
+    server.on("/api/reset",         HTTP_POST,   handleApiReset);
     server.begin();
 }
 
@@ -674,6 +656,126 @@ void setEnrollDone(uint8_t id, const char* fullName) {
     char msg[128];
     snprintf(msg, sizeof(msg), "Enrollment ok: %s (ID %u)", fullName, (unsigned)id);
     addEvent("enroll_ok", msg);
+}
+
+void handleApiUserDelete() {
+    if (!checkApiKey()) return;
+
+    String body = server.arg("plain");
+    StaticJsonDocument<128> req;
+    if (deserializeJson(req, body)) {
+        sendJson(400, "{\"ok\":false,\"error\":\"bad_json\"}");
+        return;
+    }
+    if (!req.containsKey("id")) {
+        sendJson(400, "{\"ok\":false,\"error\":\"missing_id\"}");
+        return;
+    }
+
+    uint8_t id = (uint8_t)req["id"].as<int>();
+    User u = findUser(id);
+    if (!u.found) {
+        sendJson(404, "{\"ok\":false,\"error\":\"not_found\"}");
+        return;
+    }
+
+    /* Invia DELETE_CHAR:<id> alla STM32 e attendi conferma (max 5 s) */
+    while (stm.available()) stm.read();
+    {
+        char cmd[24];
+        snprintf(cmd, sizeof(cmd), "DELETE_CHAR:%u", (unsigned)id);
+        stm.println(cmd);
+    }
+
+    char     respBuf[32];
+    uint8_t  respIdx  = 0;
+    bool     stm_ok   = false;
+    bool     got_resp = false;
+    uint32_t t0       = millis();
+
+    while (!got_resp && millis() - t0 < 5000) {
+        while (stm.available()) {
+            char c = (char)stm.read();
+            if (c == '\n') {
+                respBuf[respIdx] = '\0';
+                char expected_ok[24], expected_err[24];
+                snprintf(expected_ok,  sizeof(expected_ok),  "DELETE_CHAR_OK:%u",  (unsigned)id);
+                snprintf(expected_err, sizeof(expected_err), "DELETE_CHAR_ERR:%u", (unsigned)id);
+                if (strcmp(respBuf, expected_ok)  == 0) { stm_ok = true;  got_resp = true; }
+                if (strcmp(respBuf, expected_err) == 0) { stm_ok = false; got_resp = true; }
+                respIdx = 0;
+            } else if (c != '\r') {
+                uint8_t b = (uint8_t)c;
+                if (b >= 32 && b <= 126 && respIdx < 30) respBuf[respIdx++] = c;
+            }
+        }
+        if (!got_resp) delay(50);
+    }
+
+    if (!stm_ok) {
+        char msg[64];
+        snprintf(msg, sizeof(msg),
+                 got_resp ? "Slot %u: DeleteChar fallito (AS608)" : "Slot %u: timeout risposta STM32",
+                 (unsigned)id);
+        addEvent("error", msg);
+        sendJson(200, "{\"ok\":false,\"as608\":false}");
+        return;
+    }
+
+    if (!deleteUser(id)) {
+        sendJson(500, "{\"ok\":false,\"error\":\"db_error\"}");
+        return;
+    }
+
+    char msg[64];
+    snprintf(msg, sizeof(msg), "Utente eliminato: %s (slot %u)", u.name, (unsigned)id);
+    addEvent("db_reset", msg);
+    sendJson(200, "{\"ok\":true,\"as608\":true}");
+}
+
+void handleApiReset() {
+    if (!checkApiKey()) return;
+
+    /* Svuota buffer UART in ingresso prima di inviare il comando */
+    while (stm.available()) stm.read();
+    stm.println("AS608_RESET");
+
+    char     respBuf[32];
+    uint8_t  respIdx  = 0;
+    bool     stm_ok   = false;
+    bool     got_resp = false;
+    uint32_t t0       = millis();
+
+    /* Attendi risposta STM32 per max 10 s */
+    while (!got_resp && millis() - t0 < 10000) {
+        while (stm.available()) {
+            char c = (char)stm.read();
+            if (c == '\n') {
+                respBuf[respIdx] = '\0';
+                if (strcmp(respBuf, "AS608_RESET_OK")  == 0) { stm_ok = true;  got_resp = true; }
+                if (strcmp(respBuf, "AS608_RESET_ERR") == 0) { stm_ok = false; got_resp = true; }
+                respIdx = 0;
+            } else if (c != '\r') {
+                uint8_t b = (uint8_t)c;
+                if (b >= 32 && b <= 126 && respIdx < 30) respBuf[respIdx++] = c;
+            }
+        }
+        if (!got_resp) delay(50);
+    }
+
+    if (!stm_ok) {
+        addEvent("error", "Reset annullato: AS608 non risponde (timeout o errore sensore)");
+        sendJson(200, "{\"ok\":false,\"as608\":false}");
+        return;
+    }
+
+    if (!resetUserDatabase()) {
+        /* AS608 azzerato ma SQLite fallito — stato già loggato da resetUserDatabase() */
+        sendJson(200, "{\"ok\":false,\"as608\":true,\"error\":\"db_error\"}");
+        return;
+    }
+
+    sendJson(200, "{\"ok\":true,\"as608\":true}");
 }
 
 /* ── Helpers ─────────────────────────────────────── */

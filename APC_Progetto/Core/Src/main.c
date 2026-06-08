@@ -4,7 +4,7 @@
   * @file    main.c
   * @brief   Smart Lock — STM32F3Discovery
   *          AS608  : USART2  PA2=TX  PA3=RX   57600 baud + EXTI5 su PC5
-  *          ESP32  : USART3  PB10=TX PB11=RX 115200 baud (ricezione IT)
+  *          ESP32  : USART1  PA9=TX  PA10=RX  115200 baud (ricezione IT)
   *          LCD    : 4-bit parallelo GPIOD  PD8=RS PD9=EN PD10-PD13=D4-D7
   *          Buzzer : PB8
   *          Serratura: PB9 — HIGH=aperto (2 s) LOW=chiuso
@@ -15,10 +15,10 @@
   ******************************************************************************
   */
 /* USER CODE END Header */
-
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
 
+/* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "lcd.h"      /* driver LCD 4-bit parallelo GPIOD */
 #include "as608.h"    /* driver lettore impronta AS608    */
@@ -29,7 +29,7 @@
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
 typedef enum {
-    S_STANDBY,      /* attesa eventi: TCH (PC5) o pulsante (PA0) */
+    S_STANDBY,      /* attesa eventi: TCH (PC5) */
     S_IDENTIFY,     /* scansione impronta con AS608               */
     S_WAIT_ESP,     /* attesa risposta AUTH_RESULT da ESP32       */
     S_RESULT_OK,    /* accesso concesso — LED verde + buzz lungo  */
@@ -38,11 +38,24 @@ typedef enum {
 } AppState;
 /* USER CODE END PTD */
 
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c1;
+
 SPI_HandleTypeDef hspi1;
+
+UART_HandleTypeDef huart1;
 UART_HandleTypeDef huart2;
-UART_HandleTypeDef huart3;
+
 PCD_HandleTypeDef hpcd_USB_FS;
 
 /* USER CODE BEGIN PV */
@@ -53,9 +66,8 @@ static AppState appState = S_STANDBY;
  * Scritti nelle ISR (HAL_GPIO_EXTI_Callback), letti nel loop principale.
  * Dichiarati volatile per impedire ottimizzazioni del compilatore.         */
 static volatile uint8_t flagFinger = 0;   /* PC5 TCH — dito rilevato       */
-static volatile uint8_t flagButton = 0;   /* PA0     — pulsante blu premuto */
 
-/* ── UART3 ricezione asincrona (ESP32 → STM32) ─────────────────────────── */
+/* ── UART1 ricezione asincrona (ESP32 → STM32) ─────────────────────────── */
 #define RX3_LEN   64
 static uint8_t          rx3Byte;               /* buffer singolo byte IT     */
 static char             rx3Buf[RX3_LEN];       /* riga accumulata            */
@@ -84,8 +96,7 @@ static void MX_I2C1_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_USB_PCD_Init(void);
 static void MX_USART2_UART_Init(void);
-static void MX_USART3_UART_Init(void);
-
+static void MX_USART1_UART_Init(void);
 /* USER CODE BEGIN PFP */
 static void LED_Set(uint16_t pin, uint8_t on);
 static void LED_OffAll(void);
@@ -99,6 +110,7 @@ static void SendESP(const char* msg);
 static void RunEnroll(void);
 /* USER CODE END PFP */
 
+/* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
 /* ── Callback EXTI ─────────────────────────────────────────────────────────
@@ -106,15 +118,14 @@ static void RunEnroll(void);
  * Setta solo il flag — nessuna logica applicativa nell'ISR.                */
 void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
     if (GPIO_Pin == GPIO_PIN_5) flagFinger = 1;   /* TCH AS608     */
-    if (GPIO_Pin == GPIO_PIN_0) flagButton = 1;   /* pulsante PA0  */
 }
 
-/* ── Callback UART3 (ESP32 → STM32) ────────────────────────────────────────
+/* ── Callback UART1 (ESP32 → STM32) ────────────────────────────────────────
  * Riceve un byte alla volta e assembla la riga fino a '\n'.
  * rx3Ready = 1 segnala che rx3Buf contiene una riga completa.
  * La callback si riarma immediatamente dopo ogni byte.                     */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef* h) {
-    if (h->Instance == USART3) {
+    if (h->Instance == USART1) {
         char c = (char)rx3Byte;
         if (c == '\n') {
             rx3Buf[rx3Idx] = '\0';
@@ -123,7 +134,22 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef* h) {
         } else if (c != '\r' && rx3Idx < RX3_LEN - 1) {
             rx3Buf[rx3Idx++] = c;
         }
-        HAL_UART_Receive_IT(&huart3, &rx3Byte, 1);
+        HAL_UART_Receive_IT(&huart1, &rx3Byte, 1);
+    }
+}
+
+/* ── Callback errore UART1 ──────────────────────────────────────────────────
+ * Il HAL chiama questa funzione quando USART1 riceve un errore
+ * (framing, noise, overrun) — tipicamente causato dal rumore EMI
+ * generato dal relè alla commutazione del solenoide.
+ * Senza override la catena HAL_UART_Receive_IT si interrompe
+ * definitivamente: la STM32 smette di ricevere dall'ESP32 finché
+ * non si resetta, causando timeout su tutti i tentativi successivi.
+ * Qui si azzera il buffer parziale e si riarma la ricezione.              */
+void HAL_UART_ErrorCallback(UART_HandleTypeDef* h) {
+    if (h->Instance == USART1) {
+        rx3Idx = 0;                                  /* scarta byte corrotti */
+        HAL_UART_Receive_IT(h, &rx3Byte, 1);         /* riarma ricezione     */
     }
 }
 
@@ -142,11 +168,7 @@ static void Buzz(uint32_t ms) {
     HAL_GPIO_WritePin(BUZ_PORT, BUZ_PIN, GPIO_PIN_RESET);
 }
 
-/* Pattern buzzer:
- *   BuzzBoot    — 1 bip medio (200 ms)     : sistema pronto
- *   BuzzOK      — 1 bip lungo (500 ms)     : accesso concesso
- *   BuzzFail    — 3 bip rapidi (100 ms)    : accesso negato / errore
- *   BuzzConfirm — 1 bip breve (80 ms)      : conferma acquisizione immagine */
+/* Buzzer: Boot=200ms · OK=500ms · Fail=3×100ms · Confirm=80ms */
 static void BuzzBoot(void)    { Buzz(200); }
 static void BuzzOK(void)      { Buzz(500); }
 static void BuzzFail(void)    { Buzz(100); HAL_Delay(80); Buzz(100); HAL_Delay(80); Buzz(100); }
@@ -163,23 +185,17 @@ static void ShowLCD(const char* l1, const char* l2) {
     LCD_SetCursor(0, 1); LCD_Print(l2);
 }
 
-/* ── Helper UART3 (invio verso ESP32) ──────────────────────────────────── */
+/* ── Helper UART1 (invio verso ESP32) ──────────────────────────────────── */
 static void SendESP(const char* msg) {
     char buf[80];
     uint16_t n = (uint16_t)snprintf(buf, sizeof(buf), "%s\r\n", msg);
-    HAL_UART_Transmit(&huart3, (uint8_t*)buf, n, 1000);
+    HAL_UART_Transmit(&huart1, (uint8_t*)buf, n, 1000);
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
  * RunEnroll — procedura guidata di registrazione impronta
- *
- * Cerca prima il primo slot libero tramite AS608_FindFreeSlot(), che usa
- * LoadChar per sondare la libreria senza affidarsi a un contatore RAM.
- * Parte da slot 1 per evitare ID 0 non gestito dall'ESP32.
- *
- * Flusso:
- *   FindFreeSlot → GetImage → GenChar(1) → [dito tolto]
- *   → GetImage → GenChar(2) → RegModel → StoreChar(slot)
+ * Cerca il primo slot libero (FindFreeSlot via LoadChar), acquisisce due
+ * immagini, genera il modello e lo salva. Parte da slot 1 (ID 0 ignorato).
  * ───────────────────────────────────────────────────────────────────────── */
 static void RunEnroll(void) {
 
@@ -189,6 +205,7 @@ static void RunEnroll(void) {
 
     if (freeSlot < 0) {
         ShowLCD("DB Pieno!      ", "Max 127 impr.  ");
+        SendESP("ENROLL_RESULT:ERR:DB_FULL");
         BuzzFail();
         HAL_Delay(2000);
         return;
@@ -234,50 +251,62 @@ static void RunEnroll(void) {
     /* ── Successo ─────────────────────────────────────────── */
     snprintf(line, sizeof(line), "Salvata ID: %u", (unsigned)slot);
     ShowLCD("Impronta OK!   ", line);
+    {
+        char msg[32];
+        snprintf(msg, sizeof(msg), "ENROLL_RESULT:%u:OK", (unsigned)slot);
+        SendESP(msg);
+    }
     BuzzOK();
     HAL_Delay(2000);
     return;
 
 enroll_error:
     ShowLCD("Errore Registr.", "               ");
+    SendESP("ENROLL_RESULT:ERR:FAIL");
     BuzzFail();
     HAL_Delay(2000);
     return;
 
 enroll_timeout:
     ShowLCD("Timeout        ", "Operaz. annull.");
+    SendESP("ENROLL_RESULT:ERR:TIMEOUT");
     BuzzFail();
     HAL_Delay(2000);
 }
 
 /* USER CODE END 0 */
 
-/* ============================================================================
- * main() — entry point
- * ========================================================================== */
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
 int main(void)
 {
+
   /* USER CODE BEGIN 1 */
   /* USER CODE END 1 */
 
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
   HAL_Init();
 
   /* USER CODE BEGIN Init */
   /* USER CODE END Init */
 
+  /* Configure the system clock */
   SystemClock_Config();
 
   /* USER CODE BEGIN SysInit */
   /* USER CODE END SysInit */
 
-  /* Inizializzazione periferiche generate da CubeMX */
+  /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_I2C1_Init();
   MX_SPI1_Init();
   MX_USB_PCD_Init();
   MX_USART2_UART_Init();
-  MX_USART3_UART_Init();
-
+  MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
 
   LCD_Init();
@@ -333,6 +362,7 @@ int main(void)
           /* Verifica finale dopo cancellazione manuale */
           if (AS608_LoadChar(AS608_CHARBUF_2, 1) != AS608_OK) {
               ShowLCD("Database       ", "Azzerato!      ");
+              SendESP("DB_RESET");
               Buzz(500);
           } else {
               ShowLCD("Errore Reset   ", "Riprovare      ");
@@ -341,12 +371,14 @@ int main(void)
       } else {
           /* EmptyDB ha funzionato */
           ShowLCD("Database       ", "Azzerato!      ");
+          SendESP("DB_RESET");
           Buzz(500);
       }
 
       HAL_Delay(2000);
   }
 
+/* Destinazione goto: salta il reset hardware se AS608_VerifyPassword() fallisce */
 boot_continue:
 
   /* 2. Splash screen ──────────────────────────────────── */
@@ -366,37 +398,99 @@ boot_continue:
   }
 
   /* 4. Avvio ricezione asincrona ESP32 + notifica boot ── */
-  HAL_UART_Receive_IT(&huart3, &rx3Byte, 1);
+  HAL_UART_Receive_IT(&huart1, &rx3Byte, 1);
   SendESP("BOOT:SYSTEM_OK");
 
   appState = S_STANDBY;
 
   /* USER CODE END 2 */
 
-  /* ══════════════════════════════════════════════════════
-   * LOOP PRINCIPALE — macchina a stati
-   * ══════════════════════════════════════════════════════ */
+  /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
     switch (appState) {
 
     /* ── S_STANDBY ─────────────────────────────────────────
-     * Stato di riposo. Mostra la schermata principale e rimane
-     * in spin-wait finché uno dei due interrupt non arriva.
-     * flagButton ha priorità: se entrambi scattano insieme
-     * si avvia l'enrollment, non l'identificazione.          */
+     * Stato di riposo. Rimane in spin-wait finché arriva un
+     * dito (PC5) o un comando ESP32 via UART (ENROLL_START,
+     * DELETE_CHAR:<id>, AS608_RESET).                        */
     case S_STANDBY:
         ShowLCD("   Magic Box   ", "Attesa impronta");
         LED_OffAll();
         flagFinger = 0;
-        flagButton = 0;
+        while (!flagFinger && !rx3Ready) HAL_Delay(50);
 
-        while (!flagFinger && !flagButton) HAL_Delay(50);
+        if (rx3Ready) {
+            if (strcmp(rx3Buf, "ENROLL_START") == 0) {
+                appState = S_ENROLL;
+            } else if (strncmp(rx3Buf, "DELETE_CHAR:", 12) == 0) {
+                uint8_t delId = (uint8_t)atoi(rx3Buf + 12);
+                char resp[32];
+                uint8_t attempts = 0;
+                uint8_t deleted  = 0;
+                while (attempts < 3 && !deleted) {
+                    AS608_DeleteChar(delId);
+                    HAL_Delay(300);
+                    /* LoadChar OK → slot ancora occupato; errore → slot libero */
+                    if (AS608_LoadChar(AS608_CHARBUF_2, delId) != AS608_OK) {
+                        deleted = 1;
+                    } else if (attempts < 2) {
+                        HAL_Delay(200);
+                    }
+                    attempts++;
+                }
+                snprintf(resp, sizeof(resp),
+                         deleted ? "DELETE_CHAR_OK:%u" : "DELETE_CHAR_ERR:%u",
+                         (unsigned)delId);
+                SendESP(resp);
+                appState = S_STANDBY;
+            } else if (strcmp(rx3Buf, "AS608_RESET") == 0) {
+                ShowLCD("Reset DB...    ", "In corso...    ");
+                if (AS608_VerifyPassword() != AS608_OK) {
+                    ShowLCD("Errore Sensore ", "Reset annullato");
+                    SendESP("AS608_RESET_ERR");
+                    BuzzFail();
+                    HAL_Delay(1500);
+                    appState = S_STANDBY;
+                    break;
+                }
 
-        if (flagButton) {
-            flagButton = 0;
-            appState   = S_ENROLL;
+                /* Tentativo 1: EmptyDB bulk */
+                AS608_EmptyDB();
+                HAL_Delay(1500);
+
+                /* Verifica effettiva: slot 0 e slot 1 devono essere vuoti */
+                uint8_t r0 = (AS608_LoadChar(AS608_CHARBUF_2, 0) == AS608_OK);
+                uint8_t r1 = (AS608_LoadChar(AS608_CHARBUF_2, 1) == AS608_OK);
+
+                if (r0 || r1) {
+                    /* EmptyDB non ha funzionato — fallback: DeleteChar slot per slot */
+                    ShowLCD("Pulizia manuale", "Attendere...   ");
+                    for (uint8_t i = 0; i <= 127; i++) {
+                        if (AS608_LoadChar(AS608_CHARBUF_2, i) == AS608_OK) {
+                            AS608_DeleteChar(i);
+                        }
+                        HAL_Delay(50);
+                    }
+                }
+
+                /* Verifica finale */
+                if (AS608_LoadChar(AS608_CHARBUF_2, 1) != AS608_OK) {
+                    ShowLCD("Database       ", "Azzerato!      ");
+                    SendESP("AS608_RESET_OK");
+                    Buzz(500);
+                } else {
+                    ShowLCD("Errore Reset   ", "Riprovare      ");
+                    SendESP("AS608_RESET_ERR");
+                    BuzzFail();
+                }
+                HAL_Delay(1500);
+                appState = S_STANDBY;
+            } else {
+                appState = S_STANDBY;
+            }
+            rx3Ready = 0;
         } else {
             flagFinger = 0;
             appState   = S_IDENTIFY;
@@ -426,12 +520,13 @@ boot_continue:
             char req[32];
             snprintf(req, sizeof(req), "AUTH_REQUEST:%d", fid);
 
+            ShowLCD("Verifica...    ", "               ");
+
             /* Pulisci buffer PRIMA di inviare la richiesta */
             rx3Ready = 0;
             rx3Idx   = 0;
 
             SendESP(req);
-            ShowLCD("Verifica...    ", "               ");
             espTimer = HAL_GetTick();
             appState = S_WAIT_ESP;
         } else if (r == AS608_ERR_TIMEOUT) {
@@ -447,7 +542,7 @@ boot_continue:
     }
 
     /* ── S_WAIT_ESP ────────────────────────────────────────
-     * Attende la risposta dell'ESP32 entro 5 secondi.
+     * Attende la risposta dell'ESP32 entro 10 secondi.
      * Messaggio atteso: "AUTH_RESULT:<id>:GRANTED|DENIED"
      *
      * IMPORTANTE: il timeout è else-if — se rx3Ready è già
@@ -456,13 +551,16 @@ boot_continue:
     case S_WAIT_ESP:
         if (rx3Ready) {
             rx3Ready = 0;
-            appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK
-                                                  : S_RESULT_FAIL;
-        } else if (HAL_GetTick() - espTimer > 10000) {
+            if (strncmp(rx3Buf, "AUTH_RESULT:", 12) == 0) {
+                appState = strstr(rx3Buf, "GRANTED") ? S_RESULT_OK : S_RESULT_FAIL;
+            }
+        } else if (HAL_GetTick() - espTimer > 1500) {
             SendESP("ERR:ESP32_TIMEOUT");
             appState = S_RESULT_FAIL;
         }
-        HAL_Delay(50);
+        else{
+        	HAL_Delay(50);
+        }
         break;
 
     /* ── S_RESULT_OK ───────────────────────────────────────
@@ -475,7 +573,7 @@ boot_continue:
         LED_Set(LED_GREEN, 1);
         BuzzOK();
         Lock_Open();            /* PB9 HIGH — serratura aperta  */
-        HAL_Delay(2000);
+        HAL_Delay(1000);
         Lock_Close();           /* PB9 LOW  — serratura chiusa  */
         LED_OffAll();
         appState = S_STANDBY;
@@ -488,7 +586,7 @@ boot_continue:
         ShowLCD("Accesso Negato ", "               ");
         LED_Set(LED_RED, 1);
         BuzzFail();
-        HAL_Delay(2000);
+        HAL_Delay(1500);
         LED_OffAll();
         appState = S_STANDBY;
         break;
@@ -505,6 +603,7 @@ boot_continue:
     } /* end switch */
 
     /* USER CODE END WHILE */
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
@@ -512,7 +611,7 @@ boot_continue:
 
 /**
   * @brief System Clock Configuration
-  * (contenuto generato da STM32CubeMX — non modificare)
+  * @retval None
   */
 void SystemClock_Config(void)
 {
@@ -520,6 +619,9 @@ void SystemClock_Config(void)
   RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
   RCC_PeriphCLKInitTypeDef PeriphClkInit = {0};
 
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI|RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_BYPASS;
   RCC_OscInitStruct.HSEPredivValue = RCC_HSE_PREDIV_DIV1;
@@ -528,29 +630,51 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLMUL = RCC_PLL_MUL6;
-  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK) Error_Handler();
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
 
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK) Error_Handler();
 
-  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART2
-                              |RCC_PERIPHCLK_USART3|RCC_PERIPHCLK_I2C1;
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  PeriphClkInit.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_USART1
+                              |RCC_PERIPHCLK_USART2|RCC_PERIPHCLK_I2C1;
+  PeriphClkInit.Usart1ClockSelection = RCC_USART1CLKSOURCE_PCLK2;
   PeriphClkInit.Usart2ClockSelection = RCC_USART2CLKSOURCE_PCLK1;
-  PeriphClkInit.Usart3ClockSelection = RCC_USART3CLKSOURCE_PCLK1;
   PeriphClkInit.I2c1ClockSelection = RCC_I2C1CLKSOURCE_HSI;
   PeriphClkInit.USBClockSelection = RCC_USBCLKSOURCE_PLL;
-  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK) Error_Handler();
+  if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInit) != HAL_OK)
+  {
+    Error_Handler();
+  }
 }
 
-/* Funzioni di inizializzazione periferiche (generate da CubeMX) ------------ */
-
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_I2C1_Init(void)
 {
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.Timing = 0x00201D2B;
   hi2c1.Init.OwnAddress1 = 0;
@@ -560,13 +684,46 @@ static void MX_I2C1_Init(void)
   hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
   hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
-  if (HAL_I2C_Init(&hi2c1) != HAL_OK) Error_Handler();
-  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK) Error_Handler();
-  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK) Error_Handler();
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
+
 }
 
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_SPI1_Init(void)
 {
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
   hspi1.Instance = SPI1;
   hspi1.Init.Mode = SPI_MODE_MASTER;
   hspi1.Init.Direction = SPI_DIRECTION_2LINES;
@@ -581,11 +738,66 @@ static void MX_SPI1_Init(void)
   hspi1.Init.CRCPolynomial = 7;
   hspi1.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
   hspi1.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
-  if (HAL_SPI_Init(&hspi1) != HAL_OK) Error_Handler();
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
+
 }
 
+/**
+  * @brief USART1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART1_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART1_Init 0 */
+
+  /* USER CODE END USART1_Init 0 */
+
+  /* USER CODE BEGIN USART1_Init 1 */
+
+  /* USER CODE END USART1_Init 1 */
+  huart1.Instance = USART1;
+  huart1.Init.BaudRate = 115200;
+  huart1.Init.WordLength = UART_WORDLENGTH_8B;
+  huart1.Init.StopBits = UART_STOPBITS_1;
+  huart1.Init.Parity = UART_PARITY_NONE;
+  huart1.Init.Mode = UART_MODE_TX_RX;
+  huart1.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart1.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart1.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart1.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART1_Init 2 */
+
+  /* USER CODE END USART1_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USART2_UART_Init(void)
 {
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
   huart2.Init.BaudRate = 57600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
@@ -596,74 +808,110 @@ static void MX_USART2_UART_Init(void)
   huart2.Init.OverSampling = UART_OVERSAMPLING_16;
   huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
   huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart2) != HAL_OK) Error_Handler();
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
 }
 
-static void MX_USART3_UART_Init(void)
-{
-  huart3.Instance = USART3;
-  huart3.Init.BaudRate = 115200;
-  huart3.Init.WordLength = UART_WORDLENGTH_8B;
-  huart3.Init.StopBits = UART_STOPBITS_1;
-  huart3.Init.Parity = UART_PARITY_NONE;
-  huart3.Init.Mode = UART_MODE_TX_RX;
-  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
-  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
-  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
-  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
-  if (HAL_UART_Init(&huart3) != HAL_OK) Error_Handler();
-}
-
+/**
+  * @brief USB Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_USB_PCD_Init(void)
 {
+
+  /* USER CODE BEGIN USB_Init 0 */
+
+  /* USER CODE END USB_Init 0 */
+
+  /* USER CODE BEGIN USB_Init 1 */
+
+  /* USER CODE END USB_Init 1 */
   hpcd_USB_FS.Instance = USB;
   hpcd_USB_FS.Init.dev_endpoints = 8;
   hpcd_USB_FS.Init.speed = PCD_SPEED_FULL;
   hpcd_USB_FS.Init.phy_itface = PCD_PHY_EMBEDDED;
   hpcd_USB_FS.Init.low_power_enable = DISABLE;
   hpcd_USB_FS.Init.battery_charging_enable = DISABLE;
-  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK) Error_Handler();
+  if (HAL_PCD_Init(&hpcd_USB_FS) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USB_Init 2 */
+
+  /* USER CODE END USB_Init 2 */
+
 }
 
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
 static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
 
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOD_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, CS_I2C_SPI_Pin|LD4_Pin|LD3_Pin|LD5_Pin
-                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin|LD6_Pin, GPIO_PIN_RESET);
+                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin
+                          |LD6_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, LCD_RS_Pin|LCD_EN_Pin|LCD_D4_Pin|LCD_D5_Pin
                           |LCD_D6_Pin|LCD_D7_Pin, GPIO_PIN_RESET);
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8 | GPIO_PIN_9, GPIO_PIN_RESET);
 
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : DRDY_Pin MEMS_INT3_Pin MEMS_INT2_Pin */
   GPIO_InitStruct.Pin = DRDY_Pin|MEMS_INT3_Pin|MEMS_INT2_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_EVT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : CS_I2C_SPI_Pin LD4_Pin LD3_Pin LD5_Pin
+                           LD7_Pin LD9_Pin LD10_Pin LD8_Pin
+                           LD6_Pin */
   GPIO_InitStruct.Pin = CS_I2C_SPI_Pin|LD4_Pin|LD3_Pin|LD5_Pin
-                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin|LD6_Pin;
+                          |LD7_Pin|LD9_Pin|LD10_Pin|LD8_Pin
+                          |LD6_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PA0 */
   GPIO_InitStruct.Pin = GPIO_PIN_0;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PC5 */
   GPIO_InitStruct.Pin = GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
   GPIO_InitStruct.Pull = GPIO_PULLDOWN;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : LCD_RS_Pin LCD_EN_Pin LCD_D4_Pin LCD_D5_Pin
+                           LCD_D6_Pin LCD_D7_Pin */
   GPIO_InitStruct.Pin = LCD_RS_Pin|LCD_EN_Pin|LCD_D4_Pin|LCD_D5_Pin
                           |LCD_D6_Pin|LCD_D7_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -671,21 +919,29 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  GPIO_InitStruct.Pin = GPIO_PIN_8 | GPIO_PIN_9;  /* Buzzer PB8 · Serratura PB9 */
+  /*Configure GPIO pins : PB8 PB9 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
-  HAL_NVIC_SetPriority(EXTI0_IRQn, 0, 0);
-  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+  /* EXTI interrupt init*/
   HAL_NVIC_SetPriority(EXTI9_5_IRQn, 0, 0);
   HAL_NVIC_EnableIRQ(EXTI9_5_IRQn);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
 /* USER CODE END 4 */
 
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
 void Error_Handler(void)
 {
   /* USER CODE BEGIN Error_Handler_Debug */
@@ -693,11 +949,17 @@ void Error_Handler(void)
   while (1) {}
   /* USER CODE END Error_Handler_Debug */
 }
-
 #ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
 void assert_failed(uint8_t *file, uint32_t line)
 {
   /* USER CODE BEGIN 6 */
   /* USER CODE END 6 */
 }
-#endif
+#endif /* USE_FULL_ASSERT */

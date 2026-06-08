@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Smart Lock — Accesso</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;600&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='app.css') }}" />
+</head>
+<body class="login">
+  <div class="glow"></div>
+  <div class="shell">
+    <div class="card login-card">
+      <span class="login-brand">Smart Lock Control</span>
+      <h1>Benvenuto</h1>
+      <p style="color: var(--muted); font-size: 14px; margin: 6px 0 24px;">Accedi per gestire il sistema.</p>
+      <form class="stack" method="post" action="{{ url_for('login') }}">
+        <label class="field">
+          <span>Username</span>
+          <input type="text" name="username" autocomplete="username" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input type="password" name="password" autocomplete="current-password" required />
+        </label>
+        {% if error %}
+        <div class="alert-bar">{{ error }}</div>
+        {% endif %}
+        <button class="btn primary" type="submit">Entra</button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
